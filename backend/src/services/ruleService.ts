@@ -1,4 +1,4 @@
-import { pool } from "../config/db.js";
+import { pool } from "../config/db";
 import { Feature, Polygon } from "geojson";
 
 export async function queryRules(
@@ -37,7 +37,7 @@ WHERE altitude_ceiling >= $2
   const params = [bufferText, floor, ceil, flightStart.toISOString()];
   const { rows } = await pool.query(sql, params);
 
-  return rows.map(r => ({
+  return rows.map((r: any) => ({
     type: "Feature",
     geometry: JSON.parse(r.geom_geojson),
     properties: {
