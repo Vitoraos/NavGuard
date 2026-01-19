@@ -1,8 +1,8 @@
 import { Request, Response } from "express";
-import { makePolylineGeoJSON, bufferPolyline } from "../services/geoService.js";
+import { makePolylineGeoJSON, bufferPolyline } from "../services/geoService";
 import { queryRules } from "../services/ruleService.js";
-import { isValidLatLon, isValidAltitude, isValidBuffer } from "../utils/validators.js";
-import { parseFlightTime } from "../utils/time.js";
+import { isValidLatLon, isValidAltitude, isValidBuffer } from "../utils/validators";
+import { parseFlightTime } from "../utils/time";
 
 export async function scanHandler(req: Request, res: Response) {
   try {
