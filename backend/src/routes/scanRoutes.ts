@@ -1,6 +1,6 @@
 // backend/src/routes/scanRoutes.ts
 import { Router } from "express";
-import { scanHandler } from "../controllers/scanController.js";
+import { scanHandler } from "../controllers/scanController";
 
 const router = Router();
 
