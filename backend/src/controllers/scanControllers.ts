@@ -1,0 +1,47 @@
+import { Request, Response } from "express";
+import { makePolylineGeoJSON, bufferPolyline } from "../services/geoService.js";
+import { queryRules } from "../services/ruleService.js";
+import { isValidLatLon, isValidAltitude, isValidBuffer } from "../utils/validators.js";
+import { parseFlightTime } from "../utils/time.js";
+
+export async function scanHandler(req: Request, res: Response) {
+  try {
+    const { origin, destination, buffer_km, altitude_floor, altitude_ceiling, start_time } = req.body;
+
+    // 1. Validate inputs
+    if (!isValidLatLon(origin) || !isValidLatLon(destination)) {
+      return res.status(400).json({ error: "Invalid coordinates" });
+    }
+    const floor = Number(altitude_floor ?? 0);
+    const ceil = Number(altitude_ceiling ?? 4000);
+    if (!isValidAltitude(floor, ceil)) {
+      return res.status(400).json({ error: "Invalid altitude range" });
+    }
+    const bufferMeters = Math.min(Math.max(Number(buffer_km ?? 10), 1), 50) * 1000;
+    if (!isValidBuffer(bufferMeters)) {
+      return res.status(400).json({ error: "Invalid buffer size" });
+    }
+
+    const flightStart = parseFlightTime(start_time);
+    if (!flightStart) return res.status(400).json({ error: "Invalid start_time format. Use ISO 8601" });
+
+    // 2. Polyline and buffer
+    const polyline = makePolylineGeoJSON(origin, destination);
+    const buffered = bufferPolyline(polyline, bufferMeters);
+
+    // 3. Query NFZ/TFR rules
+    const rules = await queryRules(buffered, floor, ceil, flightStart);
+
+    return res.json({
+      polyline,
+      buffer: buffered,
+      rules,
+      start_time: flightStart.toISOString(),
+      end_time: new Date(flightStart.getTime() + 24 * 60 * 60 * 1000).toISOString() // +24h for end time
+    });
+
+  } catch (err: any) {
+    console.error("Scan error:", err);
+    return res.status(500).json({ error: err.message });
+  }
+}
