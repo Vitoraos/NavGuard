@@ -1,4 +1,6 @@
 import { Feature, LineString, Polygon } from "geojson";
+import buffer from "@turf/buffer";
+import { lineString } from "@turf/helpers";
 
 export function makePolylineGeoJSON(origin: any, destination: any): Feature<LineString> {
   return {
@@ -14,16 +16,16 @@ export function makePolylineGeoJSON(origin: any, destination: any): Feature<Line
   };
 }
 
-export function bufferPolyline(polyline: Feature<LineString>, meters: number): Feature<Polygon> {
-  return {
-    type: "Feature",
-    geometry: {
-      type: "Polygon",
-      coordinates: [] // actual buffer done in PostGIS
-    },
-    properties: {
-      polyline,
-      meters
-    }
-  };
+export function bufferPolyline(
+  polyline: Feature<LineString>,
+  meters: number
+): Feature<Polygon> {
+
+  const turfLine = lineString(polyline.geometry.coordinates);
+
+  const buffered = buffer(turfLine, meters / 1000, {
+    units: "kilometers"
+  });
+
+  return buffered as Feature<Polygon>;
 }
