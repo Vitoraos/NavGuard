@@ -1,4 +1,4 @@
-import { pool } from "../config/db";
+iimport { pool } from "../config/db";
 import { Feature, Polygon } from "geojson";
 
 export async function queryRules(
