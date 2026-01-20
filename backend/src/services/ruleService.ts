@@ -10,15 +10,8 @@ export async function queryRules(
   const bufferText = JSON.stringify(buffer);
 
   const sql = `
-WITH raw AS (
+WITH buf AS (
   SELECT ST_SetSRID(ST_GeomFromGeoJSON($1), 4326) AS geom
-),
-buf AS (
-  SELECT ST_Transform(
-           ST_Buffer(ST_Transform(raw.geom, 3857), (raw.geom->'properties'->>'meters')::float),
-           4326
-         ) AS geom
-  FROM raw
 )
 SELECT id, name, reason, altitude_floor, altitude_ceiling, source,
        start_time, end_time,
