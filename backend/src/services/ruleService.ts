@@ -7,7 +7,7 @@ export async function queryRules(
   ceil: number,
   flightStart: Date
 ) {
-  const bufferText = JSON.stringify(buffer);
+  const bufferText = JSON.stringify(buffer.geometry);
 
   const sql = `
 WITH buf AS (
