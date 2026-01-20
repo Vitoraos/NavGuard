@@ -24,6 +24,7 @@ WHERE altitude_ceiling >= $2
         OR (start_time <= $4 AND end_time >= $4)
         OR start_time >= $4
       )
+  AND geom && (SELECT geom FROM buf)
   AND ST_Intersects(geom, (SELECT geom FROM buf));
 `;
 
