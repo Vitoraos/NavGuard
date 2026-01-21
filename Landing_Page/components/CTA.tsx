@@ -33,6 +33,21 @@ export default function CTA() {
     router.push('/docs'); // Redirect to docs
   };
 
+  const handleRedirectToDocs = async (leadEmail: string) => {
+  // Update the record in Supabase
+  const { error } = await supabase
+    .from('leads')
+    .update({ docs_accessed: true })
+    .eq('email', leadEmail);
+
+  if (!error) {
+    // Redirect to docs
+    window.location.href = '/docs';
+  } else {
+    console.error('Error updating lead:', error.message);
+  }
+};
+  
   return (
     <section id="cta" className="h-screen flex flex-col justify-center items-start px-12 space-y-6 bg-primary text-white">
       <h2 className="text-3xl font-bold">Get Started Now</h2>
