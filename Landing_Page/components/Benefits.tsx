@@ -1,12 +1,21 @@
 export default function Benefits() {
+  const benefits = [
+    "Save hours of manual airspace research per flight",
+    "Reduce compliance risks",
+    "Enable scalable autonomous operations",
+    "Integrate seamlessly with your flight planning software",
+  ];
+
   return (
-    <section className="h-screen flex flex-col justify-center items-start px-12 space-y-6">
-      <h2 className="text-3xl font-bold">Benefits</h2>
-      <ul className="list-disc ml-6 space-y-2 text-lg">
-        <li>Save thousands in planning time</li>
-        <li>Reduce legal risk</li>
-        <li>Integrate easily with your fleet software</li>
-      </ul>
+    <section className="min-h-[80vh] flex flex-col justify-center px-12 bg-primary">
+      <div className="max-w-5xl mx-auto">
+        <h2 className="text-3xl md:text-4xl font-semibold text-textPrimary mb-6">Benefits</h2>
+        <ul className="list-disc pl-6 space-y-3 text-textSecondary text-lg md:text-xl">
+          {benefits.map((b) => (
+            <li key={b}>{b}</li>
+          ))}
+        </ul>
+      </div>
     </section>
-  )
+  );
 }
