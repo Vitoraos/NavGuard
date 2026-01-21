@@ -1,29 +1,37 @@
-import Header from '../components/Header'
-import Hero from '../components/Hero'
-import Problem from '../components/Problem'
-import Solution from '../components/Solution'
-import HowItWorks from '../components/HowItWorks'
-import Features from '../components/Features'
-import Example from '../components/Example'
-import Benefits from '../components/Benefits'
-import CTA from '../components/CTA'
-import Footer from '../components/Footer'
+import type { NextPage } from "next";
+import Head from "next/head";
+import Hero from "../components/Hero";
+import Problem from "../components/Problem";
+import Solution from "../components/Solution";
+import HowItWorks from "../components/HowItWorks";
+import Features from "../components/Features";
+import Benefits from "../components/Benefits";
+import Example from "../components/Example";
+import CTA from "../components/CTA";
+import Footer from "../components/Footer";
 
-export default function Home() {
+const Home: NextPage = () => {
   return (
-    <div className="bg-light text-gray-900">
-      <Header />
-      <main className="space-y-32">
+    <>
+      <Head>
+        <title>NavGuard – Aviation Regulatory Intelligence API</title>
+        <meta name="description" content="Real-time compliance and airspace intelligence API for autonomous drones and UAM" />
+        <meta name="viewport" content="width=device-width, initial-scale=1" />
+      </Head>
+
+      <div className="bg-primary font-inter">
         <Hero />
         <Problem />
         <Solution />
         <HowItWorks />
         <Features />
-        <Example />
         <Benefits />
+        <Example />
         <CTA />
-      </main>
-      <Footer />
-    </div>
-  )
-}
+        <Footer />
+      </div>
+    </>
+  );
+};
+
+export default Home;
