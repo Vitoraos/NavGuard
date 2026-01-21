@@ -1,17 +1,19 @@
 export default function Example() {
   return (
-    <section className="h-screen flex flex-col justify-center items-start px-12 space-y-6 bg-gray-100">
-      <h2 className="text-3xl font-bold">Example Request</h2>
-      <pre className="bg-white p-4 rounded shadow max-w-3xl">
-{`{
-  "origin": { "lat": 6.5244, "lon": 3.3792 },
-  "destination": { "lat": 6.5350, "lon": 3.4100 },
+    <section className="min-h-[80vh] flex flex-col justify-center px-12 bg-[#0B1320]">
+      <div className="max-w-5xl mx-auto">
+        <h2 className="text-3xl md:text-4xl font-semibold text-textPrimary mb-6">API Example</h2>
+        <pre className="bg-primary p-6 rounded-lg overflow-x-auto text-textSecondary font-mono text-sm md:text-base shadow-glow">
+{`POST /api/scan
+{
+  "origin": [3.3795, 6.5245],
+  "destination": [3.38, 6.525],
   "altitude_floor": 0,
-  "altitude_ceiling": 400,
-  "buffer_km": 5,
-  "start_time": "2026-01-20T14:00:00Z"
+  "altitude_ceiling": 500,
+  "start_time": "2026-01-21T10:00:00Z"
 }`}
-      </pre>
+        </pre>
+      </div>
     </section>
-  )
+  );
 }
