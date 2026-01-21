@@ -17,7 +17,7 @@ const Docs: NextPage = () => {
         </p>
 
         <section className="max-w-5xl space-y-8">
-          <h2 className="text-3xl font-semibold mb-4">Endpoint</h2>
+          <h2 className="text-3xl font-semibold mb-4">Endpoint: https://navguard-1.onrender.com/api/scan</h2>
           <pre className="bg-[#0F1A2B] p-6 rounded-lg overflow-x-auto text-textSecondary font-mono">
 {`POST /api/scan
 Content-Type: application/json
