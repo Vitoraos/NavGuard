@@ -1,15 +1,21 @@
+import Link from "next/link";
+
 export default function Hero() {
   return (
-    <section className="h-screen flex flex-col justify-center items-start px-12 space-y-6">
-      <h1 className="text-5xl font-bold leading-tight max-w-3xl">
-        The Easiest Way to Stay Compliant in the Sky
-      </h1>
-      <p className="text-xl max-w-2xl">
-        Instantly check restricted airspace, flight rules, and optimize routes for drones, autonomous vehicles.
-      </p>
-      <a href="#cta" className="bg-primary text-white px-6 py-3 rounded-lg font-semibold hover:bg-blue-700 transition mt-4">
-        Start Free
-      </a>
+    <section className="min-h-screen flex flex-col justify-center px-12 bg-gradient-radial from-accent/15 via-transparent to-primary relative overflow-hidden">
+      <div className="max-w-5xl">
+        <h1 className="text-5xl md:text-6xl font-bold text-textPrimary leading-tight mb-6">
+          NavGuard – Aviation Regulatory Intelligence API
+        </h1>
+        <p className="text-xl md:text-2xl text-textSecondary mb-8">
+          Instantly check restricted airspace, flight rules, and optimize autonomous flight routes with precision and authority.
+        </p>
+        <Link href="#cta">
+          <a className="inline-block bg-gradient-to-r from-accent to-secondary text-primary font-semibold px-8 py-4 rounded-lg shadow-glow hover:scale-105 transition-transform">
+            Get Started
+          </a>
+        </Link>
+      </div>
     </section>
-  )
+  );
 }
