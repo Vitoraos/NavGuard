@@ -1,65 +1,63 @@
 import { Request, Response } from "express";
-import { queryRules } from "../services/ruleService.js";
-import { isValidLatLon, isValidAltitude, isValidBuffer } from "../utils/validators";
-import { parseFlightTime } from "../utils/time";
-import { Feature, LineString } from "geojson";
+import { queryAirspace } from "../services/ruleService.js";
+import { getWeatherStatus } from "../services/weatherService.js";
+import { isValidLatLon, isValidAltitude, isValidBuffer } from "../utils/validators.js";
+import { parseFlightTime } from "../utils/time.js";
+import { pool } from "../config/db.js";
 
 export async function scanHandler(req: Request, res: Response) {
   try {
     const { origin, destination, buffer_km, altitude_floor, altitude_ceiling, start_time } = req.body;
 
-    // Validate coordinates
-    if (!isValidLatLon(origin) || !isValidLatLon(destination)) {
+    if (!isValidLatLon(origin) || !isValidLatLon(destination))
       return res.status(400).json({ error: "Invalid coordinates" });
-    }
 
-    // Validate altitudes
     const floor = Number(altitude_floor ?? 0);
-    const ceil = Number(altitude_ceiling ?? 4000);
-    if (!isValidAltitude(floor, ceil)) {
+    const ceil  = Number(altitude_ceiling ?? 4000);
+    if (!isValidAltitude(floor, ceil))
       return res.status(400).json({ error: "Invalid altitude range" });
-    }
 
-    // Validate buffer
     const bufferMeters = Math.min(Math.max(Number(buffer_km ?? 10), 1), 50) * 1000;
-    if (!isValidBuffer(bufferMeters)) {
+    if (!isValidBuffer(bufferMeters))
       return res.status(400).json({ error: "Invalid buffer size" });
-    }
 
-    // Validate flight start time
     const flightStart = parseFlightTime(start_time);
-    if (!flightStart) {
+    if (!flightStart)
       return res.status(400).json({ error: "Invalid ISO 8601 start_time" });
+
+    // 1. Freshness check — never serve stale data silently
+    const { rows: freshnessRows } = await pool.query(
+      "SELECT MAX(last_synced) AS synced FROM nfz_zones"
+    );
+    const lastSynced = freshnessRows[0]?.synced;
+    const stale = !lastSynced ||
+      Date.now() - new Date(lastSynced).getTime() > 15 * 60 * 1000;
+
+    if (stale) {
+      return res.status(503).json({
+        error:       "Airspace data is stale",
+        last_synced: lastSynced ?? null,
+        message:     "Data older than 15 minutes. Do not use for active flight planning.",
+      });
     }
 
-    // Call SQL-side buffered queryRules
-    const rules = await queryRules(
-      origin,
-      destination,
-      bufferMeters,
-      floor,
-      ceil,
-      flightStart
-    );
+    // 2. Run airspace query and weather check in parallel
+    const midLat = (origin.lat + destination.lat) / 2;
+    const midLon = (origin.lon + destination.lon) / 2;
 
-    // Recreate polyline for response
-    const polyline: Feature<LineString> = {
-      type: "Feature",
-      geometry: {
-        type: "LineString",
-        coordinates: [
-          [origin.lon, origin.lat],
-          [destination.lon, destination.lat]
-        ]
-      },
-      properties: {}
-    };
+    const [airspace, weather] = await Promise.all([
+      queryAirspace(origin, destination, bufferMeters, floor, ceil, flightStart),
+      getWeatherStatus(midLat, midLon, flightStart),
+    ]);
 
     return res.json({
-      polyline,
-      buffer: { type: "Polygon", coordinates: [] }, // buffer handled in SQL
-      rules,
-      start_time: flightStart.toISOString()
+      safe_airspace:      airspace.safe_airspace,
+      corridor:           airspace.corridor,
+      restrictions:       airspace.restrictions,
+      weather_restricted: weather.restricted,
+      weather_reason:     weather.reason ?? null,
+      data_freshness:     lastSynced,
+      start_time:         flightStart.toISOString(),
     });
 
   } catch (err: any) {
