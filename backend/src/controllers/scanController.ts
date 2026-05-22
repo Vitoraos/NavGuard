@@ -1,182 +1,224 @@
-// backend/scripts/syncWeatherGrid.ts
-// Fills weather_grid with Open-Meteo forecast data.
-// Stores 12 consecutive forecast hours per grid cell — not just current conditions.
-// This enables flightStart → flightEnd weather window queries in ruleService.
-// Run every 30 minutes via GitHub Actions cron.
+// backend/src/controllers/scanController.ts
+// All grilling decisions baked in:
+// - Haversine flight duration estimation (no user input needed)
+// - queryAirspace + queryWeatherTimeline run in parallel
+// - TFR staleness → hard 503
+// - Weather staleness → soft warning, never blocks
+// - path_connected = false → 422 with restricted_windows + safe_fragments
+// - path_connected = true → 200 with restricted_windows + optional timeline
+// - Timeline optional via ?include_timeline=true
 
-import { Pool } from "pg";
-import dotenv from "dotenv";
-dotenv.config();
+import { Request, Response } from "express";
+import { queryAirspace, queryWeatherTimeline } from "../services/ruleService.js";
+import { getWeatherFreshness } from "../services/weatherService.js";
+import { isValidLatLon, isValidAltitude, isValidBuffer } from "../utils/validators.js";
+import { parseFlightTime } from "../utils/time.js";
+import { pool } from "../config/db.js";
 
-const pool = new Pool({
-  connectionString: process.env.DATABASE_URL,
-  ssl: { rejectUnauthorized: false },
-});
+// ─── Flight duration estimator ────────────────────────────────────────────────
+// Computes estimated flight time from corridor distance.
+// Drone speed: 48 km/h (30 mph) conservative commercial default.
+// Buffer:      1.5x for takeoff, landing, wind, route deviations.
+// Floor:       15 min — minimum window for any flight.
+// Ceiling:     120 min — cap for very long corridors.
 
-// ─── Grid config ──────────────────────────────────────────────────────────────
+const DRONE_SPEED_KMH  = 48;
+const DURATION_BUFFER  = 1.5;
+const MIN_DURATION_MIN = 15;
+const MAX_DURATION_MIN = 120;
 
-const BBOX       = { minLat: 31.5, maxLat: 34.0, minLon: -98.5, maxLon: -95.5 };
-const STEP       = 0.1;   // degrees — ~10km at DFW latitude
-const BATCH_SIZE = 50;    // Open-Meteo batch limit per request
-const HOURS      = 12;    // forecast hours to store per cell
-
-// ─── Stable cell ID ───────────────────────────────────────────────────────────
-// Converts lat/lon → stable integer per grid cell.
-// Same formula used in the SQL migration unique constraint.
-
-function cellId(lat: number, lon: number): number {
-  return Math.round(lat / STEP) * 10000 + Math.round(lon / STEP);
+function haversineKm(
+  lat1: number, lon1: number,
+  lat2: number, lon2: number
+): number {
+  const R    = 6371;
+  const dLat = (lat2 - lat1) * Math.PI / 180;
+  const dLon = (lon2 - lon1) * Math.PI / 180;
+  const a    =
+    Math.sin(dLat / 2) ** 2 +
+    Math.cos(lat1 * Math.PI / 180) *
+    Math.cos(lat2 * Math.PI / 180) *
+    Math.sin(dLon / 2) ** 2;
+  return 2 * R * Math.asin(Math.sqrt(a));
 }
 
-// ─── Grid generator ───────────────────────────────────────────────────────────
-
-interface GridPoint { lat: number; lon: number; cell_id: number; }
-
-function generateGrid(): GridPoint[] {
-  const points: GridPoint[] = [];
-  for (let lat = BBOX.minLat; lat <= BBOX.maxLat; lat = +(lat + STEP).toFixed(4)) {
-    for (let lon = BBOX.minLon; lon <= BBOX.maxLon; lon = +(lon + STEP).toFixed(4)) {
-      points.push({ lat, lon, cell_id: cellId(lat, lon) });
-    }
-  }
-  return points;
+function estimateFlightMinutes(
+  origin:      { lat: number; lon: number },
+  destination: { lat: number; lon: number }
+): number {
+  const distKm     = haversineKm(origin.lat, origin.lon, destination.lat, destination.lon);
+  const rawMinutes = (distKm / DRONE_SPEED_KMH) * 60 * DURATION_BUFFER;
+  return Math.max(
+    MIN_DURATION_MIN,
+    Math.min(MAX_DURATION_MIN, Math.ceil(rawMinutes))
+  );
 }
 
-// ─── Open-Meteo batch fetch ───────────────────────────────────────────────────
-// Passes multiple lat/lon values in one HTTP call.
-// Returns next HOURS forecast readings per point.
+// ─── Handler ──────────────────────────────────────────────────────────────────
 
-interface WeatherReading {
-  cell_id:    number;
-  lat:        number;
-  lon:        number;
-  wind_mph:   number;
-  precip:     number;
-  visibility: number;
-  fetched_at: string;
-}
+export async function scanHandler(req: Request, res: Response) {
+  try {
+    const {
+      origin, destination,
+      buffer_km, altitude_floor, altitude_ceiling,
+      start_time,
+    } = req.body;
 
-async function fetchBatch(points: GridPoint[]): Promise<WeatherReading[]> {
-  const lats = points.map(p => p.lat).join(",");
-  const lons = points.map(p => p.lon).join(",");
+    const includeTimeline = req.query.include_timeline === "true";
 
-  const url =
-    `https://api.open-meteo.com/v1/forecast` +
-    `?latitude=${lats}` +
-    `&longitude=${lons}` +
-    `&hourly=windspeed_10m,precipitation,visibility` +
-    `&wind_speed_unit=mph` +
-    `&forecast_days=1` +
-    `&timezone=UTC`;
+    // ── Input validation ──────────────────────────────────────────────────
 
-  const res = await fetch(url);
-  if (!res.ok) throw new Error(`Open-Meteo ${res.status}: ${await res.text()}`);
+    if (!isValidLatLon(origin) || !isValidLatLon(destination))
+      return res.status(400).json({ error: "Invalid coordinates" });
 
-  const data      = await res.json();
-  const forecasts: any[] = Array.isArray(data) ? data : [data];
+    const floor = Number(altitude_floor ?? 0);
+    const ceil  = Number(altitude_ceiling ?? 400);
+    if (!isValidAltitude(floor, ceil))
+      return res.status(400).json({ error: "Invalid altitude range" });
 
-  // Find current UTC hour index in the time array
-  const nowHourISO = new Date().toISOString().slice(0, 13);
-  const readings: WeatherReading[] = [];
+    const bufferMeters = Math.min(Math.max(Number(buffer_km ?? 10), 1), 50) * 1000;
+    if (!isValidBuffer(bufferMeters))
+      return res.status(400).json({ error: "Invalid buffer size" });
 
-  forecasts.forEach((forecast: any, idx: number) => {
-    const times: string[] = forecast.hourly.time;
-    const startIdx = times.findIndex(t => t.startsWith(nowHourISO));
-    const from     = startIdx >= 0 ? startIdx : 0;
+    const flightStart = parseFlightTime(start_time);
+    if (!flightStart)
+      return res.status(400).json({ error: "Invalid ISO 8601 start_time" });
 
-    // Store HOURS consecutive forecast readings per cell
-    for (let h = 0; h < HOURS; h++) {
-      const i = from + h;
-      if (i >= times.length) break;
+    // ── Estimate flight window from distance ──────────────────────────────
+    // No need to ask users — computable from corridor length
 
-      readings.push({
-        cell_id:    points[idx].cell_id,
-        lat:        points[idx].lat,
-        lon:        points[idx].lon,
-        wind_mph:   forecast.hourly.windspeed_10m[i]  ?? 0,
-        precip:     forecast.hourly.precipitation[i]  ?? 0,
-        visibility: forecast.hourly.visibility[i]     ?? 9999,
-        fetched_at: times[i],
+    const estimatedMinutes  = estimateFlightMinutes(origin, destination);
+    const estimatedSeconds  = estimatedMinutes * 60;
+    const flightEnd         = new Date(
+      flightStart.getTime() + estimatedMinutes * 60 * 1000
+    );
+
+    // ── TFR freshness — hard block ────────────────────────────────────────
+    // Stale TFR data can produce false negatives (safe when restricted).
+    // Never serve potentially wrong airspace data — return 503.
+
+    const { rows: tfrRows } = await pool.query(
+      "SELECT MAX(last_synced) AS synced FROM nfz_zones"
+    );
+    const tfrLastSynced = tfrRows[0]?.synced;
+    const tfrStale = !tfrLastSynced ||
+      Date.now() - new Date(tfrLastSynced).getTime() > 15 * 60 * 1000;
+
+    if (tfrStale) {
+      return res.status(503).json({
+        error:       "airspace_data_stale",
+        last_synced: tfrLastSynced ?? null,
+        message:     "TFR data older than 15 minutes. Do not use for active flight planning.",
       });
     }
-  });
 
-  return readings;
-}
+    // ── Weather freshness — soft warning ──────────────────────────────────
+    // Stale weather never blocks. It's included in the response so operators
+    // can decide whether to trust the weather zones.
 
-// ─── Batch upsert ─────────────────────────────────────────────────────────────
-// Uses UNIQUE (cell_id, fetched_at) constraint — no duplicate rows per cell per hour.
-// Does NOT insert `restricted` — it is GENERATED ALWAYS by Postgres.
+    const weatherFreshness = await getWeatherFreshness();
 
-async function upsertBatch(readings: WeatherReading[]): Promise<void> {
-  if (!readings.length) return;
+    // ── Main computation — parallel ───────────────────────────────────────
+    // queryAirspace:        corridor → TFR + weather zones → safe polygon + connectivity
+    // queryWeatherTimeline: per-minute spatiotemporal weather matching along flight path
 
-  await pool.query(`
-    INSERT INTO public.weather_grid
-      (cell_id, geom, wind_mph, precip, visibility, fetched_at)
-    SELECT
-      cell_id,
-      ST_SetSRID(ST_MakePoint(lon, lat), 4326),
-      wind, precip, vis, fetched::timestamptz
-    FROM UNNEST(
-      $1::bigint[], $2::float[], $3::float[],
-      $4::float[], $5::float[], $6::text[]
-    ) AS t(cell_id, lat, lon, wind, precip, vis, fetched)
-    ON CONFLICT (cell_id, fetched_at)
-    DO UPDATE SET
-      wind_mph   = EXCLUDED.wind_mph,
-      precip     = EXCLUDED.precip,
-      visibility = EXCLUDED.visibility,
-      geom       = EXCLUDED.geom
-  `, [
-    readings.map(r => r.cell_id),
-    readings.map(r => r.lat),
-    readings.map(r => r.lon),
-    readings.map(r => r.wind_mph),
-    readings.map(r => r.precip),
-    readings.map(r => r.visibility),
-    readings.map(r => r.fetched_at),
-  ]);
-}
+    const [airspace, weatherTimeline] = await Promise.all([
+      queryAirspace(
+        origin, destination,
+        bufferMeters, floor, ceil,
+        flightStart, flightEnd
+      ),
+      queryWeatherTimeline(
+        origin, destination,
+        flightStart, estimatedSeconds
+      ),
+    ]);
 
-// ─── Cleanup ──────────────────────────────────────────────────────────────────
+    const flightWindow = {
+      start:             flightStart.toISOString(),
+      end:               flightEnd.toISOString(),
+      estimated_minutes: estimatedMinutes,
+    };
 
-async function deleteStale(): Promise<number> {
-  const { rowCount } = await pool.query(`
-    DELETE FROM public.weather_grid
-    WHERE fetched_at < NOW() - INTERVAL '1 hour'
-  `);
-  return rowCount ?? 0;
-}
+    // ── 422 — Disconnected safe airspace ──────────────────────────────────
+    // Weather or TFR cuts through the middle of the corridor.
+    // Safe space exists but origin and destination are in different pieces.
+    // Operator cannot fly — show them where the gap is and why.
 
-// ─── Main ─────────────────────────────────────────────────────────────────────
-
-async function main() {
-  console.log(`[${new Date().toISOString()}] Starting weather grid sync (${HOURS}h forecast)...`);
-  const grid = generateGrid();
-  console.log(`Grid: ${grid.length} points × ${HOURS} hours = ${grid.length * HOURS} readings`);
-
-  let totalOk = 0, totalFailed = 0;
-
-  for (let i = 0; i < grid.length; i += BATCH_SIZE) {
-    const batch = grid.slice(i, i + BATCH_SIZE);
-    try {
-      const readings = await fetchBatch(batch);
-      await upsertBatch(readings);
-      totalOk += readings.length;
-    } catch (err) {
-      console.error(`Batch ${Math.floor(i / BATCH_SIZE) + 1} failed:`, err);
-      totalFailed += batch.length;
+    if (!airspace.path_connected) {
+      return res.status(422).json({
+        error:  "flight_path_blocked",
+        reason: "Airspace or weather restriction creates disconnected safe space. No flyable path exists between origin and destination.",
+        restricted_windows: weatherTimeline.restricted_windows,
+        safe_fragments:     airspace.safe_fragments,  // MultiPolygon pieces for visualisation
+        corridor:           airspace.corridor,
+        no_fly: {
+          regulatory: airspace.no_fly.regulatory,
+          weather:    airspace.no_fly.weather,
+        },
+        flight_window: flightWindow,
+        weather: {
+          data_freshness: weatherFreshness.last_synced,
+          stale:          weatherFreshness.stale,
+          stale_minutes:  weatherFreshness.stale_minutes,
+        },
+        data: {
+          tfr_last_synced: tfrLastSynced,
+        },
+      });
     }
-    if (i + BATCH_SIZE < grid.length) await new Promise(r => setTimeout(r, 150));
+
+    // ── 200 — Connected safe airspace ─────────────────────────────────────
+    // Safe space is connected. Origin and destination are in the same polygon.
+    // Operator's flight planning software or autopilot routes through safe_airspace.
+    // restricted_windows tells them WHEN and WHY certain areas were cut.
+    // Timeline is optional — include via ?include_timeline=true.
+
+    return res.status(200).json({
+      // Primary output — the flyable polygon
+      safe_airspace: airspace.safe_airspace,
+
+      // Operational corridor (buffered polyline input)
+      corridor: airspace.corridor,
+
+      // NO-FLY breakdown by source
+      no_fly: {
+        regulatory: airspace.no_fly.regulatory,
+        weather:    airspace.no_fly.weather,
+      },
+
+      // Individual TFR/NFZ features with metadata
+      restrictions: airspace.restrictions,
+
+      // Connectivity confirmed
+      path_connected: true,
+
+      // Weather restrictions along the path — WHEN and WHY
+      has_weather_warning:  weatherTimeline.restricted_windows.length > 0,
+      restricted_windows:   weatherTimeline.restricted_windows,
+
+      // Per-minute timeline — optional, premium surface
+      // Enable via ?include_timeline=true
+      ...(includeTimeline && { timeline: weatherTimeline.timeline }),
+
+      // Flight window — computed, not user-provided
+      flight_window: flightWindow,
+
+      // Weather data provenance
+      weather: {
+        data_freshness: weatherFreshness.last_synced,
+        stale:          weatherFreshness.stale,
+        stale_minutes:  weatherFreshness.stale_minutes,
+      },
+
+      // Data provenance
+      data: {
+        tfr_last_synced: tfrLastSynced,
+      },
+    });
+
+  } catch (err: any) {
+    console.error("Scan error:", err);
+    return res.status(500).json({ error: err.message });
   }
-
-  const deleted = await deleteStale();
-  console.log(`Done — ok: ${totalOk}, failed: ${totalFailed}, deleted stale: ${deleted}`);
-  await pool.end();
 }
-
-main().catch(err => {
-  console.error("syncWeatherGrid crashed:", err);
-  process.exit(1);
-});
