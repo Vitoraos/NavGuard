@@ -1,67 +1,182 @@
-import { Request, Response } from "express";
-import { queryAirspace } from "../services/ruleService.js";
-import { getWeatherStatus } from "../services/weatherService.js";
-import { isValidLatLon, isValidAltitude, isValidBuffer } from "../utils/validators.js";
-import { parseFlightTime } from "../utils/time.js";
-import { pool } from "../config/db.js";
+// backend/scripts/syncWeatherGrid.ts
+// Fills weather_grid with Open-Meteo forecast data.
+// Stores 12 consecutive forecast hours per grid cell — not just current conditions.
+// This enables flightStart → flightEnd weather window queries in ruleService.
+// Run every 30 minutes via GitHub Actions cron.
 
-export async function scanHandler(req: Request, res: Response) {
-  try {
-    const { origin, destination, buffer_km, altitude_floor, altitude_ceiling, start_time } = req.body;
+import { Pool } from "pg";
+import dotenv from "dotenv";
+dotenv.config();
 
-    if (!isValidLatLon(origin) || !isValidLatLon(destination))
-      return res.status(400).json({ error: "Invalid coordinates" });
+const pool = new Pool({
+  connectionString: process.env.DATABASE_URL,
+  ssl: { rejectUnauthorized: false },
+});
 
-    const floor = Number(altitude_floor ?? 0);
-    const ceil  = Number(altitude_ceiling ?? 4000);
-    if (!isValidAltitude(floor, ceil))
-      return res.status(400).json({ error: "Invalid altitude range" });
+// ─── Grid config ──────────────────────────────────────────────────────────────
 
-    const bufferMeters = Math.min(Math.max(Number(buffer_km ?? 10), 1), 50) * 1000;
-    if (!isValidBuffer(bufferMeters))
-      return res.status(400).json({ error: "Invalid buffer size" });
+const BBOX       = { minLat: 31.5, maxLat: 34.0, minLon: -98.5, maxLon: -95.5 };
+const STEP       = 0.1;   // degrees — ~10km at DFW latitude
+const BATCH_SIZE = 50;    // Open-Meteo batch limit per request
+const HOURS      = 12;    // forecast hours to store per cell
 
-    const flightStart = parseFlightTime(start_time);
-    if (!flightStart)
-      return res.status(400).json({ error: "Invalid ISO 8601 start_time" });
+// ─── Stable cell ID ───────────────────────────────────────────────────────────
+// Converts lat/lon → stable integer per grid cell.
+// Same formula used in the SQL migration unique constraint.
 
-    // 1. Freshness check — never serve stale data silently
-    const { rows: freshnessRows } = await pool.query(
-      "SELECT MAX(last_synced) AS synced FROM nfz_zones"
-    );
-    const lastSynced = freshnessRows[0]?.synced;
-    const stale = !lastSynced ||
-      Date.now() - new Date(lastSynced).getTime() > 15 * 60 * 1000;
+function cellId(lat: number, lon: number): number {
+  return Math.round(lat / STEP) * 10000 + Math.round(lon / STEP);
+}
 
-    if (stale) {
-      return res.status(503).json({
-        error:       "Airspace data is stale",
-        last_synced: lastSynced ?? null,
-        message:     "Data older than 15 minutes. Do not use for active flight planning.",
+// ─── Grid generator ───────────────────────────────────────────────────────────
+
+interface GridPoint { lat: number; lon: number; cell_id: number; }
+
+function generateGrid(): GridPoint[] {
+  const points: GridPoint[] = [];
+  for (let lat = BBOX.minLat; lat <= BBOX.maxLat; lat = +(lat + STEP).toFixed(4)) {
+    for (let lon = BBOX.minLon; lon <= BBOX.maxLon; lon = +(lon + STEP).toFixed(4)) {
+      points.push({ lat, lon, cell_id: cellId(lat, lon) });
+    }
+  }
+  return points;
+}
+
+// ─── Open-Meteo batch fetch ───────────────────────────────────────────────────
+// Passes multiple lat/lon values in one HTTP call.
+// Returns next HOURS forecast readings per point.
+
+interface WeatherReading {
+  cell_id:    number;
+  lat:        number;
+  lon:        number;
+  wind_mph:   number;
+  precip:     number;
+  visibility: number;
+  fetched_at: string;
+}
+
+async function fetchBatch(points: GridPoint[]): Promise<WeatherReading[]> {
+  const lats = points.map(p => p.lat).join(",");
+  const lons = points.map(p => p.lon).join(",");
+
+  const url =
+    `https://api.open-meteo.com/v1/forecast` +
+    `?latitude=${lats}` +
+    `&longitude=${lons}` +
+    `&hourly=windspeed_10m,precipitation,visibility` +
+    `&wind_speed_unit=mph` +
+    `&forecast_days=1` +
+    `&timezone=UTC`;
+
+  const res = await fetch(url);
+  if (!res.ok) throw new Error(`Open-Meteo ${res.status}: ${await res.text()}`);
+
+  const data      = await res.json();
+  const forecasts: any[] = Array.isArray(data) ? data : [data];
+
+  // Find current UTC hour index in the time array
+  const nowHourISO = new Date().toISOString().slice(0, 13);
+  const readings: WeatherReading[] = [];
+
+  forecasts.forEach((forecast: any, idx: number) => {
+    const times: string[] = forecast.hourly.time;
+    const startIdx = times.findIndex(t => t.startsWith(nowHourISO));
+    const from     = startIdx >= 0 ? startIdx : 0;
+
+    // Store HOURS consecutive forecast readings per cell
+    for (let h = 0; h < HOURS; h++) {
+      const i = from + h;
+      if (i >= times.length) break;
+
+      readings.push({
+        cell_id:    points[idx].cell_id,
+        lat:        points[idx].lat,
+        lon:        points[idx].lon,
+        wind_mph:   forecast.hourly.windspeed_10m[i]  ?? 0,
+        precip:     forecast.hourly.precipitation[i]  ?? 0,
+        visibility: forecast.hourly.visibility[i]     ?? 9999,
+        fetched_at: times[i],
       });
     }
+  });
 
-    // 2. Run airspace query and weather check in parallel
-    const midLat = (origin.lat + destination.lat) / 2;
-    const midLon = (origin.lon + destination.lon) / 2;
-
-    const [airspace, weather] = await Promise.all([
-      queryAirspace(origin, destination, bufferMeters, floor, ceil, flightStart),
-      getWeatherStatus(midLat, midLon, flightStart),
-    ]);
-
-    return res.json({
-      safe_airspace:      airspace.safe_airspace,
-      corridor:           airspace.corridor,
-      restrictions:       airspace.restrictions,
-      weather_restricted: weather.restricted,
-      weather_reason:     weather.reason ?? null,
-      data_freshness:     lastSynced,
-      start_time:         flightStart.toISOString(),
-    });
-
-  } catch (err: any) {
-    console.error("Scan error:", err);
-    return res.status(500).json({ error: err.message });
-  }
+  return readings;
 }
+
+// ─── Batch upsert ─────────────────────────────────────────────────────────────
+// Uses UNIQUE (cell_id, fetched_at) constraint — no duplicate rows per cell per hour.
+// Does NOT insert `restricted` — it is GENERATED ALWAYS by Postgres.
+
+async function upsertBatch(readings: WeatherReading[]): Promise<void> {
+  if (!readings.length) return;
+
+  await pool.query(`
+    INSERT INTO public.weather_grid
+      (cell_id, geom, wind_mph, precip, visibility, fetched_at)
+    SELECT
+      cell_id,
+      ST_SetSRID(ST_MakePoint(lon, lat), 4326),
+      wind, precip, vis, fetched::timestamptz
+    FROM UNNEST(
+      $1::bigint[], $2::float[], $3::float[],
+      $4::float[], $5::float[], $6::text[]
+    ) AS t(cell_id, lat, lon, wind, precip, vis, fetched)
+    ON CONFLICT (cell_id, fetched_at)
+    DO UPDATE SET
+      wind_mph   = EXCLUDED.wind_mph,
+      precip     = EXCLUDED.precip,
+      visibility = EXCLUDED.visibility,
+      geom       = EXCLUDED.geom
+  `, [
+    readings.map(r => r.cell_id),
+    readings.map(r => r.lat),
+    readings.map(r => r.lon),
+    readings.map(r => r.wind_mph),
+    readings.map(r => r.precip),
+    readings.map(r => r.visibility),
+    readings.map(r => r.fetched_at),
+  ]);
+}
+
+// ─── Cleanup ──────────────────────────────────────────────────────────────────
+
+async function deleteStale(): Promise<number> {
+  const { rowCount } = await pool.query(`
+    DELETE FROM public.weather_grid
+    WHERE fetched_at < NOW() - INTERVAL '1 hour'
+  `);
+  return rowCount ?? 0;
+}
+
+// ─── Main ─────────────────────────────────────────────────────────────────────
+
+async function main() {
+  console.log(`[${new Date().toISOString()}] Starting weather grid sync (${HOURS}h forecast)...`);
+  const grid = generateGrid();
+  console.log(`Grid: ${grid.length} points × ${HOURS} hours = ${grid.length * HOURS} readings`);
+
+  let totalOk = 0, totalFailed = 0;
+
+  for (let i = 0; i < grid.length; i += BATCH_SIZE) {
+    const batch = grid.slice(i, i + BATCH_SIZE);
+    try {
+      const readings = await fetchBatch(batch);
+      await upsertBatch(readings);
+      totalOk += readings.length;
+    } catch (err) {
+      console.error(`Batch ${Math.floor(i / BATCH_SIZE) + 1} failed:`, err);
+      totalFailed += batch.length;
+    }
+    if (i + BATCH_SIZE < grid.length) await new Promise(r => setTimeout(r, 150));
+  }
+
+  const deleted = await deleteStale();
+  console.log(`Done — ok: ${totalOk}, failed: ${totalFailed}, deleted stale: ${deleted}`);
+  await pool.end();
+}
+
+main().catch(err => {
+  console.error("syncWeatherGrid crashed:", err);
+  process.exit(1);
+});
