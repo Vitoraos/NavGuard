@@ -6,24 +6,30 @@
   "scripts": {
     "build": "tsc",
     "start": "node dist/index.js",
-    "dev": "ts-node src/index.ts"
+    "dev": "ts-node src/index.ts",
+    "sync:weather": "ts-node scripts/syncWeatherGrid.ts",
+    "sync:tfrs": "ts-node scripts/syncTFRs.ts"
   },
   "author": "EO7",
   "license": "MIT",
   "dependencies": {
-    "dotenv": "^16.6.1",
     "express": "^4.18.2",
-    "geojson": "^0.5.0",
     "pg": "^8.11.0",
+    "geojson": "^0.5.0",
+    "dotenv": "^16.3.1",
     "uuid": "^9.0.0"
   },
   "devDependencies": {
-    "@types/express": "^4.17.21",
-    "@types/geojson": "^7946.0.10",
-    "@types/node": "^20.11.0",
-    "@types/pg": "^8.11.6",
-    "@types/uuid": "^9.0.0",
+    "typescript": "^5.3.3",
     "ts-node": "^10.9.2",
-    "typescript": "^5.9.3"
+    "@types/node": "^20.11.0",
+    "@types/express": "^4.17.21",
+    "@types/pg": "^8.11.6",
+    "@types/geojson": "^7946.0.10",
+    "@types/uuid": "^9.0.0"
+  },
+  "ts-node": {
+    "transpileOnly": true,
+    "files": true
   }
 }
