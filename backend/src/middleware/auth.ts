@@ -18,5 +18,7 @@ export async function requireApiKey(
   if (!rows.length)
     return res.status(403).json({ error: "Invalid API key" });
 
+  (req as any).apiKeyId = rows[0].id;
+
   next();
 }
