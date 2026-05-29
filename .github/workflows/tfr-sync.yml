@@ -27,7 +27,7 @@ jobs:
         working-directory: backend
 
       - name: Run TFR sync
-        run: npx ts-node --esm scripts/syncTFRs.ts
+        run: npx ts-node scripts/syncTFRs.ts
         working-directory: backend
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
