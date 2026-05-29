@@ -1,7 +1,3 @@
-// backend/src/services/weatherService.ts
-// DB-only — no live HTTP calls at request time.
-// Grid is filled by syncWeatherGrid.ts every 30 minutes.
-
 import { pool } from "../config/db";
 
 export async function getWeatherFreshness(): Promise<{
@@ -17,5 +13,8 @@ export async function getWeatherFreshness(): Promise<{
     ? Date.now() - new Date(last_synced).getTime()
     : Infinity;
   const stale_minutes = Math.floor(ageMs / 60_000);
-  return { last_synced, stale: stale_minutes > 60, stale_minutes };
+
+  // FIX-09: 35 minutes matches zoneEngine fetched_at filter
+  const STALE_THRESHOLD = Number(process.env.WEATHER_STALE_MINUTES ?? 35);
+  return { last_synced, stale: stale_minutes > STALE_THRESHOLD, stale_minutes };
 }
