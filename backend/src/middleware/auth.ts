@@ -1,5 +1,5 @@
 import { Request, Response, NextFunction } from "express";
-import { pool } from "../config/db.js";
+import { pool } from "../config/db";
 
 export async function requireApiKey(
   req: Request,

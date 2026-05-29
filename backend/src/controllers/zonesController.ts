@@ -4,9 +4,9 @@
 
 import { Request, Response } from "express";
 import { v4 as uuidv4 } from "uuid";
-import { pool } from "../config/db.js";
-import { computeZones, DroneThresholds, BBox } from "../services/zoneEngine.js";
-import { createSession, registerClient } from "../services/monitorService.js";
+import { pool } from "../config/db";
+import { computeZones, DroneThresholds, BBox } from "../services/zoneEngine";
+import { createSession, registerClient } from "../services/monitorService";
 
 export async function zonesHandler(req: Request, res: Response) {
   try {

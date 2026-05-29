@@ -1,25 +1,23 @@
-// backend/src/services/ruleService.ts
-// Unified zone-first airspace engine with spatiotemporal weather matching.
-//
-// queryAirspace  — corridor-level safe/no-fly polygon + connectivity check
-// queryWeatherTimeline — per-minute weather profile matched to drone position
+import { pool } from "../config/db";
 
-import { pool } from "../config/db.js";
-
-const WEATHER_CELL_RADIUS_M = 5000; // half of 0.1deg grid ≈ 5km cell radius
-
-// ─── 1. Corridor-level airspace computation ───────────────────────────────────
+const WEATHER_CELL_RADIUS_M = 5000;
 
 export interface AirspaceResult {
   safe_airspace:   object | null;
-  safe_fragments:  object | null;   // MultiPolygon pieces when disconnected
+  safe_fragments:  object | null;
   corridor:        object;
   no_fly: {
     regulatory:    object | null;
     weather:       object | null;
   };
   restrictions:    object[];
-  path_connected:  boolean;         // false → 422 in scanController
+  path_connected:  boolean;
+}
+
+export interface AirspaceThresholds {
+  max_wind_mph: number;
+  max_precip: number;
+  min_visibility: number;
 }
 
 export async function queryAirspace(
@@ -29,9 +27,9 @@ export async function queryAirspace(
   floor:        number,
   ceil:         number,
   flightStart:  Date,
-  flightEnd:    Date
+  flightEnd:    Date,
+  thresholds:   AirspaceThresholds
 ): Promise<AirspaceResult> {
-
   const polylineGeoJSON = JSON.stringify({
     type: "LineString",
     coordinates: [
@@ -39,15 +37,8 @@ export async function queryAirspace(
       [destination.lon, destination.lat],
     ],
   });
-
-  // Single unified query:
-  // buf → tfr_zones → weather_zones → all_nofly → safe → connectivity check
-  // All in one PostGIS round trip.
-
   const sql = `
 WITH
-
--- 1. Flight corridor: buffered polyline
 buf AS (
   SELECT ST_Transform(
     ST_Buffer(
@@ -55,8 +46,6 @@ buf AS (
     ), 4326
   ) AS geom
 ),
-
--- 2. TFR / NFZ regulatory restrictions active during flight window
 tfr_zones AS (
   SELECT ST_Union(geom) AS geom
   FROM nfz_zones
@@ -65,21 +54,16 @@ tfr_zones AS (
     AND (start_time IS NULL OR (start_time <= $6 AND end_time >= $5))
     AND ST_Intersects(geom, (SELECT geom FROM buf))
 ),
-
--- 3. Weather restrictions during flight window
--- Uses restricted GENERATED column + partial index for speed
 weather_zones AS (
   SELECT ST_Transform(
     ST_Buffer(ST_Collect(ST_Transform(geom, 3857)), $7), 4326
   ) AS geom
   FROM weather_grid
-  WHERE restricted = true
+  WHERE (wind_mph > $8 OR precip > $9 OR visibility < $10)
     AND fetched_at >= $5
     AND fetched_at <= $6
     AND ST_Within(geom, (SELECT geom FROM buf))
 ),
-
--- 4. Combined no-fly: regulatory + weather
 all_nofly AS (
   SELECT ST_Union(
     ARRAY_REMOVE(ARRAY[
@@ -88,18 +72,12 @@ all_nofly AS (
     ], NULL)
   ) AS geom
 ),
-
--- 5. Safe airspace: corridor minus all restrictions
 safe AS (
   SELECT CASE
     WHEN (SELECT geom FROM all_nofly) IS NULL THEN (SELECT geom FROM buf)
     ELSE ST_Difference((SELECT geom FROM buf), (SELECT geom FROM all_nofly))
   END AS geom
 ),
-
--- 6. Connectivity check: are origin and destination in the same polygon piece?
--- ST_Dump explodes MultiPolygon into individual pieces.
--- If any single piece contains BOTH points → connected.
 connectivity AS (
   SELECT COUNT(*) > 0 AS connected
   FROM (
@@ -108,16 +86,15 @@ connectivity AS (
   ) pieces
   WHERE ST_DWithin(
     ST_Transform(pieces.part, 3857),
-    ST_Transform(ST_SetSRID(ST_MakePoint($8, $9), 4326), 3857),
-    500   -- 500m tolerance for origin
+    ST_Transform(ST_SetSRID(ST_MakePoint($11, $12), 4326), 3857),
+    500
   )
   AND ST_DWithin(
     ST_Transform(pieces.part, 3857),
-    ST_Transform(ST_SetSRID(ST_MakePoint($10, $11), 4326), 3857),
-    500   -- 500m tolerance for destination
+    ST_Transform(ST_SetSRID(ST_MakePoint($13, $14), 4326), 3857),
+    500
   )
 )
-
 SELECT
   ST_AsGeoJSON(safe.geom)                        AS safe_airspace,
   ST_AsGeoJSON(buf.geom)                         AS corridor,
@@ -125,8 +102,6 @@ SELECT
   ST_AsGeoJSON((SELECT geom FROM weather_zones)) AS weather_no_fly,
   COALESCE((SELECT connected FROM connectivity), false) AS path_connected
 FROM safe, buf`;
-
-  // Individual restriction features with metadata (for response detail)
   const restrictionsSQL = `
 WITH buf AS (
   SELECT ST_Transform(
@@ -141,40 +116,44 @@ SELECT id, name, reason, type, altitude_floor, altitude_ceiling,
 FROM nfz_zones
 WHERE altitude_ceiling >= $3
   AND altitude_floor   <= $4
-  AND (start_time IS NULL OR (start_time <= $6 AND end_time >= $5))
+  AND (start_time IS NULL OR (start_time <= $6 AND (end_time IS NULL OR end_time >= $5)))
   AND geom && (SELECT geom FROM buf)
   AND ST_Intersects(geom, (SELECT geom FROM buf))`;
-
   const params = [
     polylineGeoJSON, bufferMeters, floor, ceil,
     flightStart.toISOString(), flightEnd.toISOString(),
     WEATHER_CELL_RADIUS_M,
+    thresholds.max_wind_mph,
+    thresholds.max_precip,
+    thresholds.min_visibility,
     origin.lon, origin.lat,
     destination.lon, destination.lat,
   ];
-
   const restrictionParams = [
     polylineGeoJSON, bufferMeters, floor, ceil,
     flightStart.toISOString(), flightEnd.toISOString(),
   ];
-
   const [mainResult, restrictionsResult] = await Promise.all([
     pool.query(sql, params),
     pool.query(restrictionsSQL, restrictionParams),
   ]);
-
   const row = mainResult.rows[0];
-
-  const safeAirspace  = row.safe_airspace  ? JSON.parse(row.safe_airspace)  : null;
+  if (!row) {
+    return {
+      safe_airspace: null,
+      safe_fragments: null,
+      corridor: JSON.parse(JSON.stringify({ type: "LineString", coordinates: [[origin.lon, origin.lat], [destination.lon, destination.lat]] })),
+      no_fly: { regulatory: null, weather: null },
+      restrictions: [],
+      path_connected: false,
+    };
+  }
+  const safeAirspace  = row.safe_airspace ? JSON.parse(row.safe_airspace) : null;
   const pathConnected = row.path_connected as boolean;
-
-  // When disconnected, return the individual fragments so the operator
-  // can visualise where the gap is (included in 422 response)
   let safeFragments: object | null = null;
   if (!pathConnected && safeAirspace) {
-    safeFragments = safeAirspace; // already a MultiPolygon from PostGIS
+    safeFragments = safeAirspace;
   }
-
   const restrictions = restrictionsResult.rows.map((r: any) => ({
     type: "Feature",
     geometry: JSON.parse(r.geom_geojson),
@@ -184,7 +163,6 @@ WHERE altitude_ceiling >= $3
       source: r.source, start_time: r.start_time, end_time: r.end_time,
     },
   }));
-
   return {
     safe_airspace:  pathConnected ? safeAirspace : null,
     safe_fragments: safeFragments,
@@ -197,16 +175,6 @@ WHERE altitude_ceiling >= $3
     path_connected: pathConnected,
   };
 }
-
-// ─── 2. Per-minute spatiotemporal weather timeline ────────────────────────────
-//
-// For each minute of the flight:
-//   - Compute drone position using ST_LineInterpolatePoint
-//   - Find nearest weather grid cell at that position
-//   - Check weather at that cell specifically at that forecast hour
-//
-// This eliminates false positives: a cell that goes bad AFTER the drone
-// has already passed through it no longer blocks the flight.
 
 export interface MinuteWeather {
   minute:     number;
@@ -240,7 +208,6 @@ export async function queryWeatherTimeline(
   flightStart:     Date,
   durationSeconds: number
 ): Promise<WeatherTimeline> {
-
   const sql = `
 WITH
 flight_line AS (
@@ -251,14 +218,10 @@ flight_line AS (
     ), 4326
   ) AS geom
 ),
-
--- One row per minute of flight
 time_steps AS (
   SELECT s AS t_offset_s
   FROM generate_series(0, $5::int, 60) AS s
 ),
-
--- Drone position + ETA at each minute
 drone_positions AS (
   SELECT
     ts.t_offset_s,
@@ -269,8 +232,6 @@ drone_positions AS (
     ) AS position
   FROM time_steps ts, flight_line fl
 ),
-
--- Spatiotemporal match: nearest cell at each minute at the right forecast hour
 minute_weather AS (
   SELECT
     dp.t_offset_s,
@@ -290,7 +251,6 @@ minute_weather AS (
         ST_Transform(wg.geom, 3857),
         15000
       )
-      -- Match forecast hour to drone ETA hour
       AND date_trunc('hour', dp.eta AT TIME ZONE 'UTC') =
           date_trunc('hour', wg.fetched_at AT TIME ZONE 'UTC')
     ORDER BY ST_Distance(
@@ -300,7 +260,6 @@ minute_weather AS (
     LIMIT 1
   ) wg
 )
-
 SELECT
   (t_offset_s / 60)::int       AS minute,
   eta,
@@ -311,15 +270,12 @@ SELECT
   COALESCE(visibility, 9999)   AS visibility
 FROM minute_weather
 ORDER BY t_offset_s`;
-
   const { rows } = await pool.query(sql, [
     origin.lon, origin.lat,
     destination.lon, destination.lat,
     durationSeconds,
     flightStart.toISOString(),
   ]);
-
-  // Build minute-by-minute timeline
   const timeline: MinuteWeather[] = rows.map((r: any) => ({
     minute:     r.minute,
     eta:        r.eta,
@@ -329,12 +285,9 @@ ORDER BY t_offset_s`;
     visibility: parseFloat(r.visibility),
     cell_id:    r.cell_id ?? null,
   }));
-
-  // Collapse consecutive restricted minutes into windows
   const restricted_windows: RestrictedWindow[] = [];
   let windowStart: MinuteWeather | null = null;
   let windowRows:  MinuteWeather[]      = [];
-
   for (const row of timeline) {
     if (row.restricted) {
       if (!windowStart) { windowStart = row; windowRows = []; }
@@ -354,8 +307,6 @@ ORDER BY t_offset_s`;
       windowRows  = [];
     }
   }
-
-  // Close any open window at end of flight
   if (windowStart && windowRows.length) {
     const last = windowRows[windowRows.length - 1];
     restricted_windows.push({
@@ -368,7 +319,6 @@ ORDER BY t_offset_s`;
       min_visibility: Math.min(...windowRows.map(r => r.visibility)),
     });
   }
-
   return {
     path_weather_safe:  restricted_windows.length === 0,
     timeline,
