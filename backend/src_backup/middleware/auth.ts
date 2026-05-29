@@ -8,7 +8,7 @@ export async function requireApiKey(
 ) {
   const key = req.headers["x-api-key"];
   if (!key)
-    return res.status(401).json({ error: "API key required" });
+    return res.status(401)on({ error: "API key required" });
 
   const { rows } = await pool.query(
     "SELECT id FROM api_keys WHERE key = $1 AND active = true",
@@ -16,7 +16,7 @@ export async function requireApiKey(
   );
 
   if (!rows.length)
-    return res.status(403).json({ error: "Invalid API key" });
+    return res.status(403)on({ error: "Invalid API key" });
 
   next();
 }

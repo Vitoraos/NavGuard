@@ -11,10 +11,6 @@ app.use("/api", scanRoutes);
 
 // Health check
 app.get("/health", (_req, res) => {
-  res.json({
-    status: "ok",
-    message: "Drone Compliance Core Backend is alive"
-  });
-});
+ res.json({ status: "ok", message: "Drone Compliance Core Backend is alive" });
 
 export default app;

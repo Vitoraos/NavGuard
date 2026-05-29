@@ -1,9 +1,17 @@
 // backend/src/services/flightService.ts
-// Stateless position check engine with dynamic TFR/NFZ re‑evaluation.
+// Stateless position check engine.
+// Called on every GPS position update from the drone/GCS.
+// No position is stored — each check is compute-and-respond.
+//
+// Flow per position update:
+//   actual GPS → check inside safe_airspace → check weather NOW at actual position
+//             → recompute remaining corridor → queryWeatherTimeline
+//             → push SSE if issues → return status
 
 import { pool } from "../config/db";
 import { queryWeatherTimeline } from "./ruleService";
-import { broadcast, sessions } from "./monitorService";
+
+// ─── Haversine — remaining distance to destination ────────────────────────────
 
 function haversineKm(
   lat1: number, lon1: number,
@@ -22,7 +30,7 @@ function haversineKm(
 
 const DRONE_SPEED_KMH  = 48;
 const DURATION_BUFFER  = 1.5;
-const MIN_DURATION_MIN = 5;
+const MIN_DURATION_MIN = 5;    // shorter floor for in-flight (already airborne)
 const MAX_DURATION_MIN = 120;
 
 function estimateRemainingSeconds(
@@ -35,9 +43,12 @@ function estimateRemainingSeconds(
   return minutes * 60;
 }
 
+// ─── Check if drone is inside the pre-flight safe_airspace ───────────────────
+// If drone has drifted outside the safe polygon → immediate alert
+
 async function checkInsideSafeAirspace(
   current:       { lat: number; lon: number },
-  flightSessionId: string
+  safeAirspaceId: string   // flight session id — we fetch safe_airspace from DB
 ): Promise<boolean> {
   const { rows } = await pool.query(`
     SELECT ST_Within(
@@ -47,36 +58,15 @@ async function checkInsideSafeAirspace(
     FROM flight_sessions
     WHERE id = $3
       AND safe_airspace IS NOT NULL
-  `, [current.lon, current.lat, flightSessionId]);
+  `, [current.lon, current.lat, safeAirspaceId]);
+
+  // If no safe_airspace stored → assume inside (pre-flight scan was clear)
   return rows[0]?.inside ?? true;
 }
 
-async function checkActiveRestrictionsAtPoint(
-  lat: number,
-  lon: number,
-  altitude: number
-): Promise<{ restricted: boolean; reasons: string[] }> {
-  const { rows } = await pool.query(`
-    SELECT name, type, reason
-    FROM nfz_zones
-    WHERE ST_Intersects(
-      geom,
-      ST_SetSRID(ST_MakePoint($1, $2), 4326)
-    )
-    AND altitude_ceiling >= $3
-    AND altitude_floor <= $4
-    AND (start_time IS NULL OR start_time <= NOW())
-    AND (end_time IS NULL OR end_time >= NOW())
-    LIMIT 1
-  `, [lon, lat, altitude, 0]);
-  if (rows.length) {
-    return {
-      restricted: true,
-      reasons: rows.map(r => `${r.type}: ${r.name} - ${r.reason || 'Active restriction'}`)
-    };
-  }
-  return { restricted: false, reasons: [] };
-}
+// ─── Current weather at actual drone position ─────────────────────────────────
+// Finds nearest weather_grid cell to actual GPS at current forecast hour.
+// This is the real-time weather check — no ETA estimation.
 
 interface PositionWeather {
   restricted:  boolean;
@@ -106,14 +96,17 @@ async function getWeatherAtPosition(
       )
     LIMIT 1
   `, [current.lon, current.lat]);
+
   if (!rows.length) {
     return { restricted: false, wind_mph: 0, precip: 0, visibility: 9999, reasons: [] };
   }
+
   const r       = rows[0];
   const reasons: string[] = [];
   if (r.wind_mph > 25)    reasons.push(`Wind ${r.wind_mph.toFixed(1)} mph exceeds 25 mph limit`);
   if (r.precip > 2)       reasons.push(`Precipitation ${r.precip.toFixed(1)} mm/hr exceeds limit`);
   if (r.visibility < 1000)reasons.push(`Visibility ${r.visibility}m below 1000m minimum`);
+
   return {
     restricted:  r.restricted,
     wind_mph:    r.wind_mph,
@@ -122,6 +115,10 @@ async function getWeatherAtPosition(
     reasons,
   };
 }
+
+// ─── Push SSE alert to monitor session ───────────────────────────────────────
+// Writes alert into weather_monitor_sessions.last_snapshot.
+// monitorService picks this up and pushes to connected SSE clients.
 
 async function pushAlert(
   monitorSessionId: string,
@@ -132,15 +129,9 @@ async function pushAlert(
     SET last_snapshot = last_snapshot || $2::jsonb
     WHERE id = $1
   `, [monitorSessionId, JSON.stringify({ position_alert: alert, alerted_at: new Date().toISOString() })]);
-  const session = sessions.get(monitorSessionId);
-  if (session && session.clients.size > 0) {
-    broadcast(session, {
-      type: "position_alert",
-      ...alert,
-      alerted_at: new Date().toISOString()
-    });
-  }
 }
+
+// ─── Main position check ──────────────────────────────────────────────────────
 
 export interface PositionCheckResult {
   safe:                   boolean;
@@ -150,28 +141,35 @@ export interface PositionCheckResult {
   restricted_windows:     object[];
   path_weather_safe:      boolean;
   alert_pushed:           boolean;
-  active_restriction:     { restricted: boolean; reasons: string[] };
 }
 
 export async function checkDronePosition(
   flightSessionId:  string,
   monitorSessionId: string | null,
   current:          { lat: number; lon: number },
-  destination:      { lat: number; lon: number },
-  altitude:         number = 400
+  destination:      { lat: number; lon: number }
 ): Promise<PositionCheckResult> {
+
+  // Run all checks in parallel — actual GPS, actual time
   const remainingSeconds = estimateRemainingSeconds(current, destination);
   const remainingMinutes = Math.ceil(remainingSeconds / 60);
-  const [insideSafe, currentWeather, timeline, activeRestriction] = await Promise.all([
+
+  const [insideSafe, currentWeather, timeline] = await Promise.all([
     checkInsideSafeAirspace(current, flightSessionId),
     getWeatherAtPosition(current),
-    queryWeatherTimeline(current, destination, new Date(), remainingSeconds),
-    checkActiveRestrictionsAtPoint(current.lat, current.lon, altitude)
+    queryWeatherTimeline(
+      current,           // actual current position — not original origin
+      destination,
+      new Date(),        // NOW — not original flightStart
+      remainingSeconds
+    ),
   ]);
+
   const overallSafe = insideSafe &&
     !currentWeather.restricted &&
-    timeline.path_weather_safe &&
-    !activeRestriction.restricted;
+    timeline.path_weather_safe;
+
+  // Push SSE alert if anything is wrong and a monitor session is linked
   let alertPushed = false;
   if (!overallSafe && monitorSessionId) {
     await pushAlert(monitorSessionId, {
@@ -181,10 +179,10 @@ export async function checkDronePosition(
       restricted_windows:   timeline.restricted_windows,
       current_position:     current,
       remaining_minutes:    remainingMinutes,
-      active_restriction:   activeRestriction
     });
     alertPushed = true;
   }
+
   return {
     safe:                 overallSafe,
     inside_safe_airspace: insideSafe,
@@ -193,6 +191,5 @@ export async function checkDronePosition(
     restricted_windows:   timeline.restricted_windows,
     path_weather_safe:    timeline.path_weather_safe,
     alert_pushed:         alertPushed,
-    active_restriction:   activeRestriction
   };
 }

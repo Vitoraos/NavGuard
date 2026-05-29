@@ -5,7 +5,7 @@
 
 import { Pool } from "pg";
 import dotenv from "dotenv";
-import { normalizeAeroAPITFR, NFZZone } from "./normalizeToNFZZone.js";
+import { normalizeAeroAPITFR, NFZZone } from "./normalizeToNFZZone";
 
 dotenv.config();
 
