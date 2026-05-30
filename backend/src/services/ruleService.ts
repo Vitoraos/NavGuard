@@ -3,325 +3,184 @@ import { pool } from "../config/db";
 const WEATHER_CELL_RADIUS_M = 5000;
 
 export interface AirspaceResult {
-  safe_airspace:   object | null;
-  safe_fragments:  object | null;
-  corridor:        object;
-  no_fly: {
-    regulatory:    object | null;
-    weather:       object | null;
-  };
-  restrictions:    object[];
-  path_connected:  boolean;
+safe_airspace:   object | null;
+safe_fragments:  object | null;
+corridor:        object;
+no_fly: {
+regulatory:    object | null;
+weather:       object | null;
+};
+restrictions:    object[];
+path_connected:  boolean;
 }
 
 export interface AirspaceThresholds {
-  max_wind_mph: number;
-  max_precip: number;
-  min_visibility: number;
+max_wind_mph: number;
+max_precip: number;
+min_visibility: number;
 }
 
 export async function queryAirspace(
-  origin:       { lat: number; lon: number },
-  destination:  { lat: number; lon: number },
-  bufferMeters: number,
-  floor:        number,
-  ceil:         number,
-  flightStart:  Date,
-  flightEnd:    Date,
-  thresholds:   AirspaceThresholds
-): Promise<AirspaceResult> {
-  const polylineGeoJSON = JSON.stringify({
-    type: "LineString",
-    coordinates: [
-      [origin.lon, origin.lat],
-      [destination.lon, destination.lat],
-    ],
-  });
-  const sql = `
-WITH
-buf AS (
-  SELECT ST_Transform(
-    ST_Buffer(
-      ST_Transform(ST_SetSRID(ST_GeomFromGeoJSON($1), 4326), 3857), $2
-    ), 4326
-  ) AS geom
-),
-tfr_zones AS (
-  SELECT ST_Union(geom) AS geom
-  FROM nfz_zones
-  WHERE altitude_ceiling >= $3
-    AND altitude_floor   <= $4
-    AND (start_time IS NULL OR (start_time <= $6 AND end_time >= $5))
-    AND ST_Intersects(geom, (SELECT geom FROM buf))
-),
-weather_zones AS (
-  SELECT ST_Transform(
-    ST_Buffer(ST_Collect(ST_Transform(geom, 3857)), $7), 4326
-  ) AS geom
-  FROM weather_grid
-  WHERE (wind_mph > $8 OR precip > $9 OR visibility < $10)
-    AND fetched_at >= $5
-    AND fetched_at <= $6
-    AND ST_Within(geom, (SELECT geom FROM buf))
-),
-all_nofly AS (
-  SELECT ST_Union(
-    ARRAY_REMOVE(ARRAY[
-      (SELECT geom FROM tfr_zones),
-      (SELECT geom FROM weather_zones)
-    ], NULL)
-  ) AS geom
-),
-safe AS (
-  SELECT CASE
-    WHEN (SELECT geom FROM all_nofly) IS NULL THEN (SELECT geom FROM buf)
-    ELSE ST_Difference((SELECT geom FROM buf), (SELECT geom FROM all_nofly))
-  END AS geom
-),
-connectivity AS (
-  SELECT COUNT(*) > 0 AS connected
-  FROM (
-    SELECT (ST_Dump(safe.geom)).geom AS part
-    FROM safe
-  ) pieces
-  WHERE ST_DWithin(
-    ST_Transform(pieces.part, 3857),
-    ST_Transform(ST_SetSRID(ST_MakePoint($11, $12), 4326), 3857),
-    500
-  )
-  AND ST_DWithin(
-    ST_Transform(pieces.part, 3857),
-    ST_Transform(ST_SetSRID(ST_MakePoint($13, $14), 4326), 3857),
-    500
-  )
-)
-SELECT
-  ST_AsGeoJSON(safe.geom)                        AS safe_airspace,
-  ST_AsGeoJSON(buf.geom)                         AS corridor,
-  ST_AsGeoJSON((SELECT geom FROM tfr_zones))     AS tfr_no_fly,
-  ST_AsGeoJSON((SELECT geom FROM weather_zones)) AS weather_no_fly,
-  COALESCE((SELECT connected FROM connectivity), false) AS path_connected
-FROM safe, buf`;
-  const restrictionsSQL = `
-WITH buf AS (
-  SELECT ST_Transform(
-    ST_Buffer(
-      ST_Transform(ST_SetSRID(ST_GeomFromGeoJSON($1), 4326), 3857), $2
-    ), 4326
-  ) AS geom
-)
-SELECT id, name, reason, type, altitude_floor, altitude_ceiling,
-       source, start_time, end_time,
-       ST_AsGeoJSON(geom) AS geom_geojson
-FROM nfz_zones
-WHERE altitude_ceiling >= $3
-  AND altitude_floor   <= $4
-  AND (start_time IS NULL OR (start_time <= $6 AND (end_time IS NULL OR end_time >= $5)))
-  AND geom && (SELECT geom FROM buf)
-  AND ST_Intersects(geom, (SELECT geom FROM buf))`;
-  const params = [
-    polylineGeoJSON, bufferMeters, floor, ceil,
-    flightStart.toISOString(), flightEnd.toISOString(),
-    WEATHER_CELL_RADIUS_M,
-    thresholds.max_wind_mph,
-    thresholds.max_precip,
-    thresholds.min_visibility,
-    origin.lon, origin.lat,
-    destination.lon, destination.lat,
-  ];
-  const restrictionParams = [
-    polylineGeoJSON, bufferMeters, floor, ceil,
-    flightStart.toISOString(), flightEnd.toISOString(),
-  ];
-  const [mainResult, restrictionsResult] = await Promise.all([
-    pool.query(sql, params),
-    pool.query(restrictionsSQL, restrictionParams),
-  ]);
-  const row = mainResult.rows[0];
-  if (!row) {
-    return {
-      safe_airspace: null,
-      safe_fragments: null,
-      corridor: JSON.parse(JSON.stringify({ type: "LineString", coordinates: [[origin.lon, origin.lat], [destination.lon, destination.lat]] })),
-      no_fly: { regulatory: null, weather: null },
-      restrictions: [],
-      path_connected: false,
-    };
-  }
-  const safeAirspace  = row.safe_airspace ? JSON.parse(row.safe_airspace) : null;
-  const pathConnected = row.path_connected as boolean;
-  let safeFragments: object | null = null;
-  if (!pathConnected && safeAirspace) {
-    safeFragments = safeAirspace;
-  }
-  const restrictions = restrictionsResult.rows.map((r: any) => ({
-    type: "Feature",
-    geometry: JSON.parse(r.geom_geojson),
-    properties: {
-      id: r.id, name: r.name, reason: r.reason, type: r.type,
-      altitude_floor: r.altitude_floor, altitude_ceiling: r.altitude_ceiling,
-      source: r.source, start_time: r.start_time, end_time: r.end_time,
-    },
-  }));
-  return {
-    safe_airspace:  pathConnected ? safeAirspace : null,
-    safe_fragments: safeFragments,
-    corridor:       JSON.parse(row.corridor),
-    no_fly: {
-      regulatory: row.tfr_no_fly    ? JSON.parse(row.tfr_no_fly)    : null,
-      weather:    row.weather_no_fly ? JSON.parse(row.weather_no_fly) : null,
-    },
-    restrictions,
-    path_connected: pathConnected,
-  };
+origin:       { lat: number; lon: number },
+destination:  { lat: number; lon: number },
+bufferMeters: number,
+floor:        number,
+ceil:          number,
+flightStart:  Date,
+flightEnd:    Date,
+thresholds:   AirspaceThresholds
+): Promise <AirspaceResult > {
+const polylineGeoJSON = JSON.stringify({
+type:  "LineString ",
+coordinates: [
+[origin.lon, origin.lat],
+[destination.lon, destination.lat],
+],
+});
+const sql =  `WITH buf AS ( SELECT ST_Transform( ST_Buffer( ST_Transform(ST_SetSRID(ST_GeomFromGeoJSON($1), 4326), 3857), $2 ), 4326 ) AS geom ), tfr_zones AS ( SELECT ST_Union(geom) AS geom FRO` `M nfz_zones WHERE altitude_ceiling ` `>= $3 AND altitude_floor ` `<= $4 AND (start_time IS NULL OR (start_time ` `<= $6 AND end_time ` `>= $5)) AND ST_Intersects(geom, (SELECT geom FROM buf)) ), weather_zones AS ( SELECT ST_Transform( ST_Buffer(ST_Collect(ST_Transform(geom, 3857)), $7), 4326 ) AS geom FROM weather_` `grid WHERE (wind_mph ` `> $8 OR precip ` `> $9 OR visibility ` `< $10) AND fetched_at ` `>= $5 AND fetched_at ` `<= $6 AND ST_Within(geom, (SELECT geom FROM buf)) ), all_nofly AS ( SELECT ST_Union( ARRAY_REMOVE(ARRAY[ (SELECT geom FROM tfr_zones), (SELECT geom FROM weather_zones) ], NULL) ) A` `S geom ), safe AS ( SELECT CASE WHEN (SELECT geom FROM all_nofly) IS NULL THEN (SELECT geom FROM buf) ELSE ST_Difference((SELECT geom FROM buf), (SELECT geom FROM all_nofly)) END A` `S geom ), connectivity AS ( SELECT COUNT(*) ` `> 0 AS connected FROM ( SELECT (ST_Dump(safe.geom)).geom AS part FROM safe ) pieces WHERE ST_DWithin( ST_Transform(pieces.part, 3857), ST_Transform(ST_SetSRID(ST_MakePoint($11, $12` `), 4326), 3857), 500 ) AND ST_DWithin( ST_Transform(pieces.part, 3857), ST_Transform(ST_SetSRID(ST_MakePoint($13, $14), 4326), 3857), 500 ) ) SELECT ST_AsGeoJSON(safe.geom) AS safe` `_airspace, ST_AsGeoJSON(buf.geom) AS corridor, ST_AsGeoJSON((SELECT geom FROM tfr_zones)) AS tfr_no_fly, ST_AsGeoJSON((SELECT geom FROM weather_zones)) AS weather_no_fly, COALESCE(` `(SELECT connected FROM connectivity), false) AS path_connected FROM safe, buf` ;
+const restrictionsSQL =  `WITH buf AS ( SELECT ST_Transform( ST_Buffer( ST_Transform(ST_SetSRID(ST_GeomFromGeoJSON($1), 4326), 3857), $2 ), 4326 ) AS geom ) SELECT id, name, reason, type, altitude_floor, al` `titude_ceiling, source, start_time, end_time, ST_AsGeoJSON(geom) AS geom_geojson FROM nfz_zones WHERE altitude_ceiling ` `>= $3 AND altitude_floor ` `<= $4 AND (start_time IS NULL OR (start_time ` `<= $6 AND (end_time IS NULL OR end_time ` `>= $5))) AND geom ` `&` `& (SELECT geom FROM buf) AND ST_Intersects(geom, (SELECT geom FROM buf))` ;
+const params = [
+polylineGeoJSON, bufferMeters, floor, ceil,
+flightStart.toISOString(), flightEnd.toISOString(),
+WEATHER_CELL_RADIUS_M,
+thresholds.max_wind_mph,
+thresholds.max_pr ecip,
+thresholds.min_visibility,
+origin.lon, origin.lat,
+destination.lon, destination.lat,
+];
+const restrictionParams = [
+polylineGeoJSON, bufferMeters, floor, ceil,
+flightStart.to ISOString(), flightEnd.toISOString(),
+];
+const [mainResult, restrictionsResult] = await Promise.all([
+pool.query(sql, params),
+pool.query(restrictionsSQL, restrictionParams),
+]);
+c onst row = mainResult.rows[0];
+if (!row) {
+return {
+safe_airspace: null,
+safe_fragments: null,
+corridor: JSON.parse(JSON.stringify({ type:  "LineString ", coordinates: [[origin.lon, origin.lat], [destination.lon, destination.lat]] })),
+no_fly: { regulatory: null, weather: null },
+restrictions: [],
+path_connected: false,
+};
+}
+const  safeAirspace  = row.safe_airspace ? JSON.parse(row.safe_airspace) : null;
+const pathConnected = row.path_connected as boolean;
+let safeFragments: object | null = null;
+if (!pathCo nnected  & & safeAirspace) {
+safeFragments = safeAirspace;
+}
+const restrictions = restrictionsResult.rows.map((r: any) = > ({
+type:  "Feature ",
+geometry: JSON.parse(r.geom_geojson),
+properties: {
+id: r.id, name: r.name, reason: r.reason, type: r.type,
+altitude_floor: r.altitude_floor, altitude_ceiling: r.altitude_ceilin g,
+source: r.source, start_time: r.start_time, end_time: r.end_time,
+},
+}));
+return {
+safe_airspace:  pathConnected ? safeAirspace : null,
+safe_fragments: safeFragments,
+corridor:        JSON.parse(row.corridor),
+no_fly: {
+regulatory: row.tfr_no_fly    ? JSON.parse(row.tfr_no_fly)    : null,
+weather:    row.weather_no_fly ? JSON.parse(row.weather_no_fly) : nu ll,
+},
+restrictions,
+path_connected: pathConnected,
+};
 }
 
 export interface MinuteWeather {
-  minute:     number;
-  eta:        string;
-  restricted: boolean;
-  wind_mph:   number;
-  precip:     number;
-  visibility: number;
-  cell_id:    number | null;
+minute:     number;
+eta:        string;
+restricted: boolean;
+wind_mph:   number;
+precip:     number;
+visibility: number;
+cell_id:    number | null;
 }
 
 export interface RestrictedWindow {
-  from_minute:    number;
-  to_minute:      number;
-  eta_start:      string;
-  eta_end:        string;
-  peak_wind:      number;
-  peak_precip:    number;
-  min_visibility: number;
+from_minute:    number;
+to_minute:      number;
+eta_start:      string;
+eta_end:        string;
+peak_wind:      number;
+peak_precip:    number;
+min_visibility: number;
 }
 
 export interface WeatherTimeline {
-  path_weather_safe:  boolean;
-  timeline:           MinuteWeather[];
-  restricted_windows: RestrictedWindow[];
+path_weather_safe:  boolean;
+timeline:           MinuteWeather[];
+restricted_windows: RestrictedWindow[];
 }
 
 export async function queryWeatherTimeline(
-  origin:          { lat: number; lon: number },
-  destination:     { lat: number; lon: number },
-  flightStart:     Date,
-  durationSeconds: number
-): Promise<WeatherTimeline> {
-  const sql = `
-WITH
-flight_line AS (
-  SELECT ST_SetSRID(
-    ST_MakeLine(
-      ST_MakePoint($1, $2),
-      ST_MakePoint($3, $4)
-    ), 4326
-  ) AS geom
-),
-time_steps AS (
-  SELECT s AS t_offset_s
-  FROM generate_series(0, $5::int, 60) AS s
-),
-drone_positions AS (
-  SELECT
-    ts.t_offset_s,
-    ($6::timestamptz + (ts.t_offset_s || ' seconds')::interval) AS eta,
-    ST_LineInterpolatePoint(
-      fl.geom,
-      LEAST(1.0, ts.t_offset_s::float / GREATEST($5::float, 1))
-    ) AS position
-  FROM time_steps ts, flight_line fl
-),
-minute_weather AS (
-  SELECT
-    dp.t_offset_s,
-    dp.eta,
-    wg.cell_id,
-    wg.restricted,
-    wg.wind_mph,
-    wg.precip,
-    wg.visibility
-  FROM drone_positions dp
-  CROSS JOIN LATERAL (
-    SELECT cell_id, restricted, wind_mph, precip, visibility
-    FROM weather_grid wg
-    WHERE
-      ST_DWithin(
-        ST_Transform(dp.position, 3857),
-        ST_Transform(wg.geom, 3857),
-        15000
-      )
-      AND date_trunc('hour', dp.eta AT TIME ZONE 'UTC') =
-          date_trunc('hour', wg.fetched_at AT TIME ZONE 'UTC')
-    ORDER BY ST_Distance(
-      ST_Transform(dp.position, 3857),
-      ST_Transform(wg.geom, 3857)
-    )
-    LIMIT 1
-  ) wg
-)
-SELECT
-  (t_offset_s / 60)::int       AS minute,
-  eta,
-  cell_id,
-  COALESCE(restricted, false)  AS restricted,
-  COALESCE(wind_mph,   0)      AS wind_mph,
-  COALESCE(precip,     0)      AS precip,
-  COALESCE(visibility, 9999)   AS visibility
-FROM minute_weather
-ORDER BY t_offset_s`;
-  const { rows } = await pool.query(sql, [
-    origin.lon, origin.lat,
-    destination.lon, destination.lat,
-    durationSeconds,
-    flightStart.toISOString(),
-  ]);
-  const timeline: MinuteWeather[] = rows.map((r: any) => ({
-    minute:     r.minute,
-    eta:        r.eta,
-    restricted: r.restricted,
-    wind_mph:   parseFloat(r.wind_mph),
-    precip:     parseFloat(r.precip),
-    visibility: parseFloat(r.visibility),
-    cell_id:    r.cell_id ?? null,
-  }));
-  const restricted_windows: RestrictedWindow[] = [];
-  let windowStart: MinuteWeather | null = null;
-  let windowRows:  MinuteWeather[]      = [];
-  for (const row of timeline) {
-    if (row.restricted) {
-      if (!windowStart) { windowStart = row; windowRows = []; }
-      windowRows.push(row);
-    } else if (windowStart) {
-      const last = windowRows[windowRows.length - 1];
-      restricted_windows.push({
-        from_minute:    windowStart.minute,
-        to_minute:      last.minute,
-        eta_start:      windowStart.eta,
-        eta_end:        last.eta,
-        peak_wind:      Math.max(...windowRows.map(r => r.wind_mph)),
-        peak_precip:    Math.max(...windowRows.map(r => r.precip)),
-        min_visibility: Math.min(...windowRows.map(r => r.visibility)),
-      });
-      windowStart = null;
-      windowRows  = [];
-    }
-  }
-  if (windowStart && windowRows.length) {
-    const last = windowRows[windowRows.length - 1];
-    restricted_windows.push({
-      from_minute:    windowStart.minute,
-      to_minute:      last.minute,
-      eta_start:      windowStart.eta,
-      eta_end:        last.eta,
-      peak_wind:      Math.max(...windowRows.map(r => r.wind_mph)),
-      peak_precip:    Math.max(...windowRows.map(r => r.precip)),
-      min_visibility: Math.min(...windowRows.map(r => r.visibility)),
-    });
-  }
-  return {
-    path_weather_safe:  restricted_windows.length === 0,
-    timeline,
-    restricted_windows,
-  };
+origin:          { lat: number; lon: number },
+destination:     { lat: number; lon: number },
+flightStart:     Date,
+durationSeconds: nu mber
+): Promise <WeatherTimeline > {
+const sql =  `WITH flight_line AS ( SELECT ST_SetSRID( ST_MakeLine( ST_MakePoint($1, $2), ST_MakePoint($3, $4) ), 4326 ) AS geom ), time_steps AS ( SELECT s AS t_offset_s FROM generate_series(0,` ` $5::int, 60) AS s ), drone_positions AS ( SELECT ts.t_offset_s, ($6::timestamptz + (ts.t_offset_s || ' seconds')::interval) AS eta, ST_LineInterpolatePoint( fl.geom, LEAST(1.0, ts` `.t_offset_s::float / GREATEST($5::float, 1)) ) AS position FROM time_steps ts, flight_line fl ), minute_weather AS ( SELECT dp.t_offset_s, dp.eta, wg.cell_id, wg.restricted, wg.win` `d_mph, wg.precip, wg.visibility FROM drone_positions dp CROSS JOIN LATERAL ( SELECT cell_id, restricted, wind_mph, precip, visibility FROM weather_grid wg WHERE ST_DWithin( ST_Tran` `sform(dp.position, 3857), ST_Transform(wg.geom, 3857), 15000 ) AND wg.fetched_at > NOW() - INTERVAL '40 minutes' ORDER BY ST_` `Distance( ST_Transform(dp.position, 3857), ST_Transform(wg.geom, 3857) ) LIMIT 1 ) wg ) SELECT (t_offset_s / 60)::int AS minute, eta, cell_id, COALESCE(restricted, false) AS restri` `cted, COALESCE(wind_mph, 0) AS wind_mph, COALESCE(precip, 0) AS precip, COALESCE(visibility, 9999) AS visibility FROM minute_weather ORDER BY t_offset_s` ;
+const { rows } = await pool.query(sql, [
+origin.lon, origin.lat,
+destination.lon, destination.lat,
+durationSeconds,
+flightStart.toISOString(),
+]);
+const timeline: MinuteWeather[]  = rows.map((r: any) = > ({
+minute:     r.minute,
+eta:        r.eta,
+restricted: r.restricted,
+wind_mph:   parseFloat(r.wind_mph),
+precip:     parseFloat(r.precip),
+visibility: parseFloat(r.visibility),
+ cell_id:    r.cell_id ?? null,
+}));
+const restricted_windows: RestrictedWindow[] = [];
+let windowStart: MinuteWeather | null = null;
+let windowRows:  MinuteWeather[]      = [];
+for  (const row of timeline) {
+if (row.restricted) {
+if (!windowStart) { windowStart = row; windowRows = []; }
+windowRows.push(row);
+} else if (windowStart) {
+const last = windowRows[w indowRows.length - 1];
+restricted_windows.push({
+from_minute:    windowStart.minute,
+to_minute:      last.minute,
+eta_start:      windowStart.eta,
+eta_end:        last.eta,
+peak_wi nd:      Math.max(...windowRows.map(r = > r.wind_mph)),
+peak_precip:    Math.max(...windowRows.map(r = > r.precip)),
+min_visibility: Math.min(...windowRows.map(r = > r.visibility)),
+});
+windowStart = null;
+windowRows  = [];
+}
+}
+if (windowStart  & & windowRows.length) {
+const last = windowRows[windowRows.length - 1];
+restricted_windows.push({
+from_minute:    windowStart.minute,
+to_minute:      last.minute,
+eta_start:      wi ndowStart.eta,
+eta_end:        last.eta,
+peak_wind:      Math.max(...windowRows.map(r = > r.wind_mph)),
+peak_precip:    Math.max(...windowRows.map(r = > r.precip)),
+min_visibility: Math.min(...windowRows.map(r = > r.visibility)),
+});
+}
+return {
+path_weather_safe:  restricted_windows.length === 0,
+timeline,
+restricted_windows,
+};
 }
