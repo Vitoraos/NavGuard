@@ -1,10 +1,9 @@
-name: Sync Weather Grid
 
+name: Sync Weather Grid
 on:
   schedule:
-    - cron: '*/10 * * * *'
+    - cron: '*/5 * * * *'
   workflow_dispatch:
-
 jobs:
   sync:
     runs-on: ubuntu-latest
@@ -23,4 +22,4 @@ jobs:
         run: npx ts-node --esm scripts/syncWeatherGrid.ts
         working-directory: backend
         env:
-          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+         DATABASE_URL: ${{ secrets.DATABASE_URL }}
