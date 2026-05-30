@@ -56,7 +56,17 @@ async function checkInsideSafeAirspace(
   altitudeMSL_ft: number = 0,
   sessionLimits: { floor: number; ceiling: number } = { floor: 0, ceiling: 400 }
 ): Promise<{ inside: boolean; new_tfr_hit: boolean; tfr_name: string | null }> {
-  
+  const { rows: elevRows } = await pool.query(`
+    SELECT elevation_m
+    FROM weather_grid
+    WHERE fetched_at > NOW() - INTERVAL '40 minutes'
+    ORDER BY ST_Distance(
+      ST_Transform(geom, 3857),
+      ST_Transform(ST_SetSRID(ST_MakePoint($1, $2), 4326), 3857)
+    )
+    LIMIT 1
+  `, [current.lon, current.lat]);
+
   const { rows: safeRows } = await pool.query(
     `SELECT ST_Within( ST_SetSRID(ST_MakePoint($1, $2), 4326), safe_airspace ) AS inside FROM flight_sessions WHERE id = $3 AND safe_airspace IS NOT NULL`,
     [current.lon, current.lat, flightSessionId]
