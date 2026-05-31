@@ -1,5 +1,6 @@
 import { pool } from "../config/db";
-import { queryWeatherTimeline } from "./ruleService";
+import { queryWeatherTimeline, RestrictedWindow } from "./ruleService";
+import { RestrictionState } from "../types/restrictions";
 
 function selectBand(altitudeMSL_ft: number): string {
   if (altitudeMSL_ft < 2500) return "surface";
@@ -53,28 +54,25 @@ function estimateRemainingSeconds(
 async function checkInsideSafeAirspace(
   current:         { lat: number; lon: number },
   flightSessionId: string,
-  altitudeMSL_ft: number = 0,
-  sessionLimits: { floor: number; ceiling: number } = { floor: 0, ceiling: 400 }
+  altitudeMSL_ft:  number = 0,
+  sessionLimits:   { floor: number; ceiling: number } = { floor: 0, ceiling: 400 }
 ): Promise<{ inside: boolean; new_tfr_hit: boolean; tfr_name: string | null }> {
-  const { rows: elevRows } = await pool.query(`
-    SELECT elevation_m
-    FROM weather_grid
-    WHERE fetched_at > NOW() - INTERVAL '40 minutes'
-    ORDER BY ST_Distance(
-      ST_Transform(geom, 3857),
-      ST_Transform(ST_SetSRID(ST_MakePoint($1, $2), 4326), 3857)
-    )
-    LIMIT 1
-  `, [current.lon, current.lat]);
+  // Dead elevation query removed — altitudeMSL_ft already passed in from checkDronePosition
 
   const { rows: safeRows } = await pool.query(
-    `SELECT ST_Within( ST_SetSRID(ST_MakePoint($1, $2), 4326), safe_airspace ) AS inside FROM flight_sessions WHERE id = $3 AND safe_airspace IS NOT NULL`,
+    `SELECT ST_Within(ST_SetSRID(ST_MakePoint($1, $2), 4326), safe_airspace) AS inside
+     FROM flight_sessions WHERE id = $3 AND safe_airspace IS NOT NULL`,
     [current.lon, current.lat, flightSessionId]
   );
   const insideStored = safeRows[0]?.inside ?? true;
 
   const { rows: tfrRows } = await pool.query(
-    `SELECT id, name FROM nfz_zones WHERE ST_Within(ST_SetSRID(ST_MakePoint($1, $2), 4326), geom) AND altitude_floor <= $4 AND altitude_ceiling >= $4 AND start_time >= (SELECT created_at FROM flight_sessions WHERE id = $3) AND (end_time IS NULL OR end_time > NOW()) LIMIT 1`,
+    `SELECT id, name FROM nfz_zones
+     WHERE ST_Within(ST_SetSRID(ST_MakePoint($1, $2), 4326), geom)
+       AND altitude_floor <= $4 AND altitude_ceiling >= $4
+       AND (start_time IS NULL OR start_time >= (SELECT created_at FROM flight_sessions WHERE id = $3))
+       AND (end_time IS NULL OR end_time > NOW())
+     LIMIT 1`,
     [current.lon, current.lat, flightSessionId, altitudeMSL_ft]
   );
   const newTfrHit = tfrRows.length > 0;
@@ -98,19 +96,27 @@ interface PositionWeather {
 }
 
 async function getWeatherAtPosition(
-  current: { lat: number; lon: number },
+  current:        { lat: number; lon: number },
   altitudeMSL_ft: number = 0,
   sessionCeiling: number = 400
 ): Promise<PositionWeather> {
   const { rows } = await pool.query(
-    `SELECT restricted, wind_mph, precip, visibility FROM weather_grid WHERE fetched_at > NOW() - INTERVAL '40 minutes' AND altitude_band = $3 ORDER BY ST_Distance( ST_Transform(geom, 3857), ST_Transform(ST_SetSRID(ST_MakePoint($1, $2), 4326), 3857) ) LIMIT 1`,
+    `SELECT restricted, wind_mph, precip, visibility
+     FROM weather_grid
+     WHERE fetched_at > NOW() - INTERVAL '40 minutes'
+       AND altitude_band = $3
+     ORDER BY ST_Distance(
+       ST_Transform(geom, 3857),
+       ST_Transform(ST_SetSRID(ST_MakePoint($1, $2), 4326), 3857)
+     )
+     LIMIT 1`,
     [current.lon, current.lat, selectBand(altitudeMSL_ft)]
   );
 
   if (!rows.length)
     return { restricted: false, wind_mph: 0, precip: 0, visibility: 9999, reasons: [] };
 
-  const r       = rows[0];
+  const r = rows[0];
   const reasons: string[] = [];
   if (r.wind_mph > 25)     reasons.push(`Wind ${r.wind_mph.toFixed(1)} mph exceeds 25 mph limit`);
   if (r.precip > 2)        reasons.push(`Precipitation ${r.precip.toFixed(1)} mm/hr exceeds limit`);
@@ -118,10 +124,10 @@ async function getWeatherAtPosition(
   if (altitudeMSL_ft > sessionCeiling) reasons.push(`Altitude ${altitudeMSL_ft}ft exceeds ${sessionCeiling}ft approved ceiling`);
 
   return {
-    restricted:  r.restricted,
-    wind_mph:    r.wind_mph,
-    precip:      r.precip,
-    visibility:  r.visibility,
+    restricted: r.restricted,
+    wind_mph:   r.wind_mph,
+    precip:     r.precip,
+    visibility: r.visibility,
     reasons,
   };
 }
@@ -140,7 +146,7 @@ export interface PositionCheckResult {
   tfr_name:             string | null;
   current_weather:      PositionWeather;
   remaining_minutes:    number;
-  restricted_windows:   object[];
+  restricted:           RestrictionState;
   path_weather_safe:    boolean;
   alert_pushed:         boolean;
 }
@@ -150,13 +156,13 @@ export async function checkDronePosition(
   monitorSessionId: string | null,
   current:          { lat: number; lon: number },
   destination:      { lat: number; lon: number },
-  altitude: number = 0,
-  sessionLimits: { floor: number; ceiling: number } = { floor: 0, ceiling: 400 }
+  altitude:         number = 0,
+  sessionLimits:    { floor: number; ceiling: number } = { floor: 0, ceiling: 400 }
 ): Promise<PositionCheckResult> {
   const remainingSeconds = estimateRemainingSeconds(current, destination);
   const remainingMinutes = Math.ceil(remainingSeconds / 60);
 
-  const elevationM    = await getElevationAtPoint(current.lon, current.lat);
+  const elevationM     = await getElevationAtPoint(current.lon, current.lat);
   const altitudeMSL_ft = altitude + (elevationM * 3.28084);
   // BUG-01: MSL altitude used for band selection across all checks
 
@@ -169,6 +175,11 @@ export async function checkDronePosition(
   const insideSafe  = safeAirspaceCheck.inside;
   const overallSafe = insideSafe && !currentWeather.restricted && timeline.path_weather_safe;
 
+  const restrictionState: RestrictionState = {
+    windows: timeline.restricted_windows as RestrictedWindow[],
+    active:  timeline.restricted_windows.length > 0 ? timeline.restricted_windows[0] as RestrictedWindow : null,
+  };
+
   let alertPushed = false;
   if (!overallSafe && monitorSessionId) {
     await pushAlert(monitorSessionId, {
@@ -177,7 +188,7 @@ export async function checkDronePosition(
       new_tfr_activated:    safeAirspaceCheck.new_tfr_hit,
       tfr_name:             safeAirspaceCheck.tfr_name,
       current_weather:      currentWeather,
-      restricted_windows:   timeline.restricted_windows,
+      restricted:           restrictionState,
       current_position:     current,
       remaining_minutes:    remainingMinutes,
     });
@@ -191,7 +202,7 @@ export async function checkDronePosition(
     tfr_name:             safeAirspaceCheck.tfr_name,
     current_weather:      currentWeather,
     remaining_minutes:    remainingMinutes,
-    restricted_windows:   timeline.restricted_windows,
+    restricted:           restrictionState,
     path_weather_safe:    timeline.path_weather_safe,
     alert_pushed:         alertPushed,
   };
