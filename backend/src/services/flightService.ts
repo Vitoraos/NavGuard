@@ -1,6 +1,7 @@
 import { pool } from "../config/db";
 import { queryWeatherTimeline, RestrictedWindow } from "./ruleService";
 import { RestrictionState } from "../types/restrictions";
+import { broadcast, getSession } from "./monitorService"; // FIX-01
 
 function selectBand(altitudeMSL_ft: number): string {
   if (altitudeMSL_ft < 2500) return "surface";
@@ -52,15 +53,15 @@ async function checkInsideSafeAirspace(
     [current.lon, current.lat, flightSessionId]
   );
   const insideStored = safeRows[0]?.inside ?? true;
-  
+
   const { rows: tfrRows } = await pool.query(
     `SELECT id, name FROM nfz_zones WHERE ST_Within(ST_SetSRID(ST_MakePoint($1, $2), 4326), geom) AND altitude_floor <= $4 AND altitude_ceiling >= $4 AND (start_time IS NULL OR start_time >= (SELECT created_at FROM flight_sessions WHERE id = $3)) AND (end_time IS NULL OR end_time > NOW()) LIMIT 1`,
     [current.lon, current.lat, flightSessionId, altitudeMSL_ft]
   );
-  
+
   const newTfrHit = tfrRows.length > 0;
   const withinVertical = altitudeMSL_ft >= sessionLimits.floor && altitudeMSL_ft <= sessionLimits.ceiling;
-  
+
   return { inside: insideStored && !newTfrHit && withinVertical, new_tfr_hit: newTfrHit, tfr_name: newTfrHit ? tfrRows[0].name : null };
 }
 
@@ -77,37 +78,40 @@ async function getWeatherAtPosition(
     `SELECT restricted, wind_mph, precip, visibility FROM weather_grid WHERE fetched_at > NOW() - INTERVAL '40 minutes' AND altitude_band = $3 ORDER BY ST_Distance(ST_Transform(geom, 3857), ST_Transform(ST_SetSRID(ST_MakePoint($1, $2), 4326), 3857)) LIMIT 1`,
     [current.lon, current.lat, selectBand(altitudeMSL_ft)]
   );
-  
+
   if (!rows.length) return { restricted: false, wind_mph: 0, precip: 0, visibility: 9999, reasons: ["No weather data available"] };
-  
+
   const r = rows[0];
   const reasons: string[] = [];
   if (r.wind_mph > thresholds.max_wind_mph) reasons.push(`Wind ${r.wind_mph.toFixed(1)} mph exceeds ${thresholds.max_wind_mph} mph limit`);
   if (r.precip > thresholds.max_precip) reasons.push(`Precipitation ${r.precip.toFixed(1)} mm/hr exceeds ${thresholds.max_precip} limit`);
   if (r.visibility < thresholds.min_visibility) reasons.push(`Visibility ${r.visibility}m below ${thresholds.min_visibility}m minimum`);
   if (altitudeMSL_ft > sessionCeiling) reasons.push(`Altitude ${altitudeMSL_ft}ft exceeds ${sessionCeiling}ft approved ceiling`);
-  
+
   return { restricted: reasons.length > 0, wind_mph: r.wind_mph, precip: r.precip, visibility: r.visibility, reasons };
 }
 
+// FIX-01: broadcast to SSE clients immediately after persisting to DB
 async function pushAlert(monitorSessionId: string, alert: object): Promise<void> {
   await pool.query(
     `UPDATE weather_monitor_sessions SET last_snapshot = last_snapshot || $2::jsonb WHERE id = $1`,
     [monitorSessionId, JSON.stringify({ position_alert: alert, alerted_at: new Date().toISOString() })]
   );
+
+  const session = getSession(monitorSessionId);
+  if (session) {
+    broadcast(session, { type: "position_alert", ...(alert as object) });
+  }
 }
 
-// FIX: O(1) Rolling Horizon check that adapts to live drone heading and speed
 async function checkImmediateHorizon(
   current: { lat: number; lon: number },
   destination: { lat: number; lon: number },
   altitudeMSL_ft: number,
   groundSpeedMs: number,
   horizonSeconds: number,
-  headingDeg?: number // NEW: Optional live heading from drone telemetry
+  headingDeg?: number
 ): Promise<boolean> {
-  
-  // 1. Determine Heading: Use live telemetry heading if provided, otherwise calculate bearing to destination
   let headingRad: number;
   if (headingDeg !== undefined && !isNaN(headingDeg)) {
     headingRad = (headingDeg * Math.PI) / 180;
@@ -117,10 +121,8 @@ async function checkImmediateHorizon(
     headingRad = Math.atan2(dLon, dLat);
   }
 
-  // 2. Calculate projection distance (Speed in m/s * Time in seconds)
   const distanceMeters = groundSpeedMs * horizonSeconds;
 
-  // 3. PostGIS Vector Check
   const sql = `
     WITH future_pos AS (
       SELECT ST_Project(ST_SetSRID(ST_MakePoint($1, $2), 4326)::geography, $3, $4)::geometry AS geom
@@ -139,7 +141,7 @@ async function checkImmediateHorizon(
 
   const { rows } = await pool.query(sql, [
     current.lon, current.lat, distanceMeters, headingRad,
-    selectBand(altitudeMSL_ft), 25, 2, 1000 // Note: In a full refactor, pull these from thresholds param
+    selectBand(altitudeMSL_ft), 25, 2, 1000
   ]);
 
   return rows[0]?.is_safe ?? true;
@@ -164,23 +166,21 @@ export async function checkDronePosition(
   destination: { lat: number; lon: number },
   altitudeAGL_ft: number = 0,
   sessionLimits: { floor: number; ceiling: number } = { floor: 0, ceiling: 400 },
-  groundSpeedMs: number = 10, // FIX: Added live speed parameter
-  thresholds: WeatherThresholds = { max_wind_mph: 25, max_precip: 2, min_visibility: 1000 }, // FIX: Added dynamic thresholds
-  headingDeg?: number // FIX: Added optional live heading
+  groundSpeedMs: number = 10,
+  thresholds: WeatherThresholds = { max_wind_mph: 25, max_precip: 2, min_visibility: 1000 },
+  headingDeg?: number
 ): Promise<PositionCheckResult> {
   const groundSpeedKmh = groundSpeedMs * 3.6;
   const remainingSeconds = estimateRemainingSeconds(current, destination, groundSpeedKmh);
   const remainingMinutes = Math.ceil(remainingSeconds / 60);
-  
-  // FIX: Accurate AGL to MSL conversion using terrain elevation
+
   const elevationM = await getElevationAtPoint(current.lon, current.lat);
   const altitudeMSL_ft = altitudeAGL_ft + (elevationM * 3.28084);
 
   const safeAirspaceCheck = await checkInsideSafeAirspace(current, flightSessionId, altitudeMSL_ft, sessionLimits);
   const currentWeather = await getWeatherAtPosition(current, altitudeMSL_ft, sessionLimits.ceiling, thresholds);
-  
-  // FIX: Replaced heavy queryWeatherTimeline with O(1) Rolling Horizon check
-  const horizonSeconds = Math.min(120, Math.ceil(5000 / groundSpeedMs)); // Check next ~60-120 seconds
+
+  const horizonSeconds = Math.min(120, Math.ceil(5000 / groundSpeedMs));
   const immediateHorizonSafe = await checkImmediateHorizon(current, destination, altitudeMSL_ft, groundSpeedMs, horizonSeconds, headingDeg);
 
   const insideSafe = safeAirspaceCheck.inside;
