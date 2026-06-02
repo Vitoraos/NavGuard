@@ -26,7 +26,6 @@ export interface ZoneComputeResult {
 }
 
 export async function computeZones(bbox: BBox, t: DroneThresholds): Promise<ZoneComputeResult> {
-  // BUG-01: monitor sessions default to surface band
   const { rows } = await pool.query<{
     id: number; lat: string; lon: string;
     wind_mph: string; precip: string; visibility: string;
@@ -58,7 +57,7 @@ export async function computeZones(bbox: BBox, t: DroneThresholds): Promise<Zone
   const { rows: geoRows } = await pool.query<{ safe_airspace: string | null; no_fly_union: string | null }>(`
     WITH bbox_geom AS (SELECT ST_MakeEnvelope($1, $2, $3, $4, 4326) AS geom),
     weather_bad AS (
-      SELECT CASE WHEN $5::int[] = '{}' THEN NULL
+      SELECT CASE WHEN cardinality($5::int[]) = 0 THEN NULL
         ELSE ST_Buffer(ST_Collect(geom)::geography, 5000)::geometry
       END AS geom
       FROM weather_grid

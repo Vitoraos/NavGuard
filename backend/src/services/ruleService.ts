@@ -38,7 +38,6 @@ export async function queryAirspace(
     coordinates: [[origin.lon, origin.lat], [destination.lon, destination.lat]],
   });
 
-  // FIX: Replaced EPSG:3857 distortion with true spheroidal ::geography buffering
   const sql = `
     WITH buf AS (
       SELECT ST_Buffer(ST_SetSRID(ST_GeomFromGeoJSON($1), 4326)::geography, $2)::geometry AS geom
@@ -81,7 +80,6 @@ export async function queryAirspace(
     FROM safe, buf
   `;
 
-  // FIX: Replaced EPSG:3857 distortion in restrictions query as well
   const restrictionsSQL = `
     WITH buf AS (
       SELECT ST_Buffer(ST_SetSRID(ST_GeomFromGeoJSON($1), 4326)::geography, $2)::geometry AS geom
@@ -115,7 +113,7 @@ export async function queryAirspace(
   const safeAirspace = row.safe_airspace ? JSON.parse(row.safe_airspace) : null;
   const pathConnected = row.path_connected as boolean;
   const safeFragments = !pathConnected && safeAirspace ? safeAirspace : null;
-  
+
   const restrictions = restrictionsResult.rows.map((r: any) => ({
     type: "Feature",
     geometry: JSON.parse(r.geom_geojson),
@@ -132,9 +130,22 @@ export async function queryAirspace(
   };
 }
 
-export interface MinuteWeather { minute: number; eta: string; restricted: boolean; wind_mph: number; precip: number; visibility: number; cell_id: number | null; }
+// FIX-04: null means no weather cell found within range — never treat as safe
+export type WeatherRestricted = boolean | null;
+
+export interface MinuteWeather {
+  minute: number;
+  eta: string;
+  restricted: WeatherRestricted; // FIX-04: null = data_unavailable
+  data_unavailable: boolean;     // FIX-04: explicit flag for callers
+  wind_mph: number;
+  precip: number;
+  visibility: number;
+  cell_id: number | null;
+}
+
 export interface RestrictedWindow { from_minute: number; to_minute: number; eta_start: string; eta_end: string; peak_wind: number; peak_precip: number; min_visibility: number; }
-export interface WeatherTimeline { path_weather_safe: boolean; timeline: MinuteWeather[]; restricted_windows: RestrictedWindow[]; }
+export interface WeatherTimeline { path_weather_safe: boolean; data_gaps: boolean; timeline: MinuteWeather[]; restricted_windows: RestrictedWindow[]; }
 
 export async function queryWeatherTimeline(
   origin: { lat: number; lon: number },
@@ -148,18 +159,42 @@ export async function queryWeatherTimeline(
     time_steps AS ( SELECT s AS t_offset_s FROM generate_series(0, $5::int, 60) AS s ),
     drone_positions AS ( SELECT ts.t_offset_s, ($6::timestamptz + (ts.t_offset_s || ' seconds')::interval) AS eta, ST_LineInterpolatePoint(fl.geom, LEAST(1.0, ts.t_offset_s::float / GREATEST($5::float, 1))) AS position FROM time_steps ts, flight_line fl ),
     minute_weather AS ( SELECT dp.t_offset_s, dp.eta, wg.cell_id, wg.restricted, wg.wind_mph, wg.precip, wg.visibility FROM drone_positions dp CROSS JOIN LATERAL ( SELECT cell_id, restricted, wind_mph, precip, visibility FROM weather_grid wg WHERE ST_DWithin(ST_Transform(dp.position, 3857), ST_Transform(wg.geom, 3857), 15000) AND wg.fetched_at > NOW() - INTERVAL '40 minutes' AND wg.altitude_band = $7 ORDER BY ST_Distance(ST_Transform(dp.position, 3857), ST_Transform(wg.geom, 3857)) LIMIT 1 ) wg )
-    SELECT (t_offset_s / 60)::int AS minute, eta, cell_id, COALESCE(restricted, false) AS restricted, COALESCE(wind_mph, 0) AS wind_mph, COALESCE(precip, 0) AS precip, COALESCE(visibility, 9999) AS visibility FROM minute_weather ORDER BY t_offset_s
+    SELECT (t_offset_s / 60)::int AS minute, eta, cell_id,
+      COALESCE(restricted, NULL) AS restricted,  -- FIX-04: NULL = no data, never coerce to false
+      COALESCE(wind_mph, 0) AS wind_mph,
+      COALESCE(precip, 0) AS precip,
+      COALESCE(visibility, 9999) AS visibility
+    FROM minute_weather ORDER BY t_offset_s
   `;
+
   const { rows } = await pool.query(sql, [origin.lon, origin.lat, destination.lon, destination.lat, durationSeconds, flightStart.toISOString(), selectBand(altitudeCeiling)]);
-  
-  const timeline: MinuteWeather[] = rows.map((r: any) => ({ minute: r.minute, eta: r.eta, restricted: r.restricted, wind_mph: parseFloat(r.wind_mph), precip: parseFloat(r.precip), visibility: parseFloat(r.visibility), cell_id: r.cell_id ?? null }));
-  
+
+  // FIX-04: track whether any minute had no coverage
+  let dataGaps = false;
+
+  const timeline: MinuteWeather[] = rows.map((r: any) => {
+    const unavailable = r.restricted === null;
+    if (unavailable) dataGaps = true;
+    return {
+      minute: r.minute,
+      eta: r.eta,
+      restricted: unavailable ? null : r.restricted,
+      data_unavailable: unavailable,
+      wind_mph: parseFloat(r.wind_mph),
+      precip: parseFloat(r.precip),
+      visibility: parseFloat(r.visibility),
+      cell_id: r.cell_id ?? null,
+    };
+  });
+
   const restricted_windows: RestrictedWindow[] = [];
   let windowStart: MinuteWeather | null = null;
   let windowRows: MinuteWeather[] = [];
-  
+
   for (const row of timeline) {
-    if (row.restricted) {
+    // FIX-04: treat data_unavailable as restricted — never clear it as safe
+    const isRestricted = row.restricted === true || row.data_unavailable;
+    if (isRestricted) {
       if (!windowStart) { windowStart = row; windowRows = []; }
       windowRows.push(row);
     } else if (windowStart) {
@@ -168,10 +203,11 @@ export async function queryWeatherTimeline(
       windowStart = null; windowRows = [];
     }
   }
+
   if (windowStart && windowRows.length) {
     const last = windowRows[windowRows.length - 1];
     restricted_windows.push({ from_minute: windowStart.minute, to_minute: last.minute, eta_start: windowStart.eta, eta_end: last.eta, peak_wind: Math.max(...windowRows.map(r => r.wind_mph)), peak_precip: Math.max(...windowRows.map(r => r.precip)), min_visibility: Math.min(...windowRows.map(r => r.visibility)) });
   }
-  
-  return { path_weather_safe: restricted_windows.length === 0, timeline, restricted_windows };
+
+  return { path_weather_safe: restricted_windows.length === 0, data_gaps: dataGaps, timeline, restricted_windows };
 }
