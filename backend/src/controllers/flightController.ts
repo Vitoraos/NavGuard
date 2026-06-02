@@ -1,8 +1,10 @@
 import { Request, Response } from "express";
 import { pool } from "../config/db";
-import { checkDronePosition, WeatherThresholds } from "../services/flightService";
+// FIX: Added WeatherThresholds to this import line
+import { checkDronePosition, WeatherThresholds } from "../services/flightService"; 
 import { isValidLatLon } from "../utils/validators";
 
+// ... rest of the file remains exactly the same ...
 interface AuthRequest extends Request {
   apiKeyId?: string;
 }
