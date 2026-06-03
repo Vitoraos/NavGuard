@@ -18,6 +18,7 @@
     "geojson": "^0.5.0",
     "dotenv": "^16.3.1",
     "uuid": "^9.0.0"
+    "ioredis": "^5.3.2"
   },
   "devDependencies": {
     "typescript": "^5.3.3",
@@ -27,6 +28,7 @@
     "@types/pg": "^8.11.6",
     "@types/geojson": "^7946.0.10",
     "@types/uuid": "^9.0.0"
+    "@types/ioredis": "^4.28.10"
   },
   "ts-node": {
     "transpileOnly": true,
