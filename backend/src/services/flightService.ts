@@ -94,7 +94,7 @@ async function getWeatherAtPosition(
 // FIX-01: broadcast to SSE clients immediately after persisting to DB
 async function pushAlert(monitorSessionId: string, alert: object): Promise<void> {
   await pool.query(
-    `UPDATE weather_monitor_sessions SET last_snapshot = last_snapshot || $2::jsonb WHERE id = $1`,
+    `UPDATE weather_monitor_sessions SET last_snapshot = COALESCE(last_snapshot, '{}'::jsonb) || $2::jsonb WHERE id = $1`,
     [monitorSessionId, JSON.stringify({ position_alert: alert, alerted_at: new Date().toISOString() })]
   );
 
