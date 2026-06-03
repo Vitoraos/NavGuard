@@ -148,9 +148,17 @@ export async function getSnapshot(sessionId: string): Promise<object | null> {
 // ─── Distributed poll lock ──────────────────────────────────────────────────
 // SET NX EX — only one instance wins the lock per poll interval
 async function acquirePollLock(sessionId: string): Promise<boolean> {
-  const result = await redis.set(keyLock(sessionId), "1", "NX", "EX", LOCK_TTL_S);
+  const result = await redis.set(
+    keyLock(sessionId),
+    "1",
+    "EX",
+    LOCK_TTL_S,
+    "NX"
+  );
+
   return result === "OK";
 }
+
 
 // ─── Polling ────────────────────────────────────────────────────────────────
 function startPolling(sessionId: string): void {
