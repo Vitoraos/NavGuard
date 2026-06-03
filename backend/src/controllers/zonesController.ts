@@ -5,6 +5,7 @@ import { pool } from "../config/db";
 import { computeZones, DroneThresholds, BBox } from "../services/zoneEngine";
 import { createSession, registerClient } from "../services/monitorService";
 import { auditLog } from "../services/auditService";
+import { createSession, registerClient, getSession, getSnapshot } from "../services/monitorService";
 
 export async function zonesHandler(req: Request, res: Response) {
   try {
