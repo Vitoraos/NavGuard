@@ -11,6 +11,7 @@ export type AuditEndpoint =
   | "POST /zones"
   | "POST /flight/start"
   | "POST /flight/:id/position"
+  | "POST /flight/:id/contingency"
   | "DELETE /flight/:id";
 
 export interface AuditPayload {
