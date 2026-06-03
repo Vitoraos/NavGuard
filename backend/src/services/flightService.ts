@@ -1,7 +1,7 @@
 import { pool } from "../config/db";
 import { queryWeatherTimeline, RestrictedWindow } from "./ruleService";
 import { RestrictionState } from "../types/restrictions";
-import { broadcast, getSession } from "./monitorService"; // FIX-01
+import { broadcast } from "./monitorService";
 
 function selectBand(altitudeMSL_ft: number): string {
   if (altitudeMSL_ft < 2500) return "surface";
@@ -98,11 +98,7 @@ async function pushAlert(monitorSessionId: string, alert: object): Promise<void>
     [monitorSessionId, JSON.stringify({ position_alert: alert, alerted_at: new Date().toISOString() })]
   );
 
-  const session = getSession(monitorSessionId);
-  if (session) {
-    broadcast(session, { type: "position_alert", ...(alert as object) });
-  }
-}
+  await broadcast(monitorSessionId, { type: "position_alert", ...(alert as object) });
 
 async function checkImmediateHorizon(
   current: { lat: number; lon: number },
