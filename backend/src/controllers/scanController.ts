@@ -6,11 +6,11 @@ import { parseFlightTime } from "../utils/time";
 import { pool } from "../config/db";
 import { auditLog } from "../services/auditService";
 
-const DRONE_SPEED_KMH       = 48;
-const DURATION_BUFFER       = 1.5;
-const MIN_DURATION_MIN      = 15;
-const MAX_DURATION_MIN      = 120;
-const CONTINGENCY_BUFFER_M  = 500; // Fixed 500m buffer around contingency landing point
+const DRONE_SPEED_KMH      = 48;
+const DURATION_BUFFER      = 1.5;
+const MIN_DURATION_MIN     = 15;
+const MAX_DURATION_MIN     = 120;
+const CONTINGENCY_BUFFER_M = 500;
 
 function haversineKm(lat1: number, lon1: number, lat2: number, lon2: number): number {
   const R    = 6371;
@@ -26,43 +26,31 @@ function haversineKm(lat1: number, lon1: number, lat2: number, lon2: number): nu
 
 function estimateFlightMinutes(
   origin:      { lat: number; lon: number },
-  destination: { lat: number; lon: number }
+  destination: { lat: number; lon: number },
+  speedKmh:    number = DRONE_SPEED_KMH
 ): number {
   const distKm     = haversineKm(origin.lat, origin.lon, destination.lat, destination.lon);
-  const rawMinutes = (distKm / DRONE_SPEED_KMH) * 60 * DURATION_BUFFER;
+  const rawMinutes = (distKm / speedKmh) * 60 * DURATION_BUFFER;
   return Math.max(MIN_DURATION_MIN, Math.min(MAX_DURATION_MIN, Math.ceil(rawMinutes)));
 }
 
-// BUILD-02: check a contingency landing point against live airspace and weather
 async function checkContingencyPoint(
-  point:        { lat: number; lon: number },
-  floor:        number,
-  ceil:         number,
-  flightStart:  Date,
-  flightEnd:    Date,
-  thresholds:   { max_wind_mph: number; max_precip: number; min_visibility: number }
+  point:       { lat: number; lon: number },
+  floor:       number,
+  ceil:        number,
+  flightStart: Date,
+  flightEnd:   Date,
+  thresholds:  { max_wind_mph: number; max_precip: number; min_visibility: number }
 ): Promise<{
-  cleared:        boolean;
-  restrictions:   object[];
-  weather_clear:  boolean;
-  no_fly:         { regulatory: object | null; weather: object | null };
+  cleared:       boolean;
+  restrictions:  object[];
+  weather_clear: boolean;
+  no_fly:        { regulatory: object | null; weather: object | null };
 }> {
-  const result = await queryAirspace(
-    point,              // origin = landing point
-    point,              // destination = same point (point check not line check)
-    CONTINGENCY_BUFFER_M,
-    floor,
-    ceil,
-    flightStart,
-    flightEnd,
-    thresholds
-  );
-
-  const weatherTimeline = await queryWeatherTimeline(
-    point, point,
-    flightStart,
-    5 * 60  // 5 minute window — just need to know if landing is safe right now
-  );
+  const [result, weatherTimeline] = await Promise.all([
+    queryAirspace(point, point, CONTINGENCY_BUFFER_M, floor, ceil, flightStart, flightEnd, thresholds),
+    queryWeatherTimeline(point, point, flightStart, 5 * 60),
+  ]);
 
   return {
     cleared:       result.path_connected && weatherTimeline.restricted_windows.length === 0,
@@ -79,9 +67,10 @@ export async function scanHandler(req: Request, res: Response) {
       buffer_km, altitude_floor, altitude_ceiling,
       start_time,
       thresholds,
-      contingency_landing, // BUILD-02: optional { lat, lon }
+      contingency_landing,
+      ground_speed_kmh,
     } = req.body;
-    const apiKeyId       = (req as any).apiKeyId;
+    const apiKeyId        = (req as any).apiKeyId;
     const includeTimeline = req.query.include_timeline === "true";
 
     if (!isValidLatLon(origin) || !isValidLatLon(destination))
@@ -100,13 +89,13 @@ export async function scanHandler(req: Request, res: Response) {
     if (!flightStart)
       return res.status(400).json({ error: "Invalid ISO 8601 start_time" });
 
-    // BUILD-02: validate contingency point if provided
     if (contingency_landing !== undefined && contingency_landing !== null) {
       if (!isValidLatLon(contingency_landing))
         return res.status(400).json({ error: "contingency_landing must be { lat, lon } with valid coordinates" });
     }
 
-    const estimatedMinutes = estimateFlightMinutes(origin, destination);
+    const speedKmh         = ground_speed_kmh ? Number(ground_speed_kmh) : DRONE_SPEED_KMH;
+    const estimatedMinutes = estimateFlightMinutes(origin, destination, speedKmh);
     const estimatedSeconds = estimatedMinutes * 60;
     const flightEnd        = new Date(flightStart.getTime() + estimatedMinutes * 60 * 1000);
 
@@ -129,7 +118,6 @@ export async function scanHandler(req: Request, res: Response) {
       min_visibility: thresholds?.min_visibility ?? 1000,
     };
 
-    // Run main corridor check and optional contingency check in parallel
     const [airspace, weatherTimeline, contingencyResult] = await Promise.all([
       queryAirspace(origin, destination, bufferMeters, floor, ceil, flightStart, flightEnd, weatherThresholds),
       queryWeatherTimeline(origin, destination, flightStart, estimatedSeconds),
@@ -142,21 +130,20 @@ export async function scanHandler(req: Request, res: Response) {
       start:             flightStart.toISOString(),
       end:               flightEnd.toISOString(),
       estimated_minutes: estimatedMinutes,
+      speed_kmh:         speedKmh,
     };
 
-    const contingencyBlock = contingencyResult
-      ? {
-          cleared:       contingencyResult.cleared,
-          restrictions:  contingencyResult.restrictions,
-          weather_clear: contingencyResult.weather_clear,
-          no_fly:        contingencyResult.no_fly,
-        }
-      : null;
+    const contingencyBlock = contingencyResult ? {
+      cleared:       contingencyResult.cleared,
+      restrictions:  contingencyResult.restrictions,
+      weather_clear: contingencyResult.weather_clear,
+      no_fly:        contingencyResult.no_fly,
+    } : null;
 
     if (!airspace.path_connected) {
       const blockedResponse = {
-        error:   "flight_path_blocked",
-        reason:  "Airspace or weather restriction creates disconnected safe space. No flyable path exists between origin and destination.",
+        error:              "flight_path_blocked",
+        reason:             "Airspace or weather restriction creates disconnected safe space. No flyable path exists between origin and destination.",
         restricted_windows: weatherTimeline.restricted_windows,
         safe_fragments:     airspace.safe_fragments,
         corridor:           airspace.corridor,
@@ -179,6 +166,7 @@ export async function scanHandler(req: Request, res: Response) {
           altitude_floor:       floor,
           altitude_ceiling:     ceil,
           buffer_meters:        bufferMeters,
+          speed_kmh:            speedKmh,
           restrictions_hit:     airspace.restrictions.length,
           weather_windows_hit:  weatherTimeline.restricted_windows.length,
           data_gaps:            weatherTimeline.data_gaps,
@@ -221,6 +209,7 @@ export async function scanHandler(req: Request, res: Response) {
         altitude_floor:       floor,
         altitude_ceiling:     ceil,
         buffer_meters:        bufferMeters,
+        speed_kmh:            speedKmh,
         safe_airspace:        airspace.safe_airspace,
         restrictions_hit:     airspace.restrictions.length,
         restriction_names:    airspace.restrictions.map((r: any) => r.properties?.name ?? null).filter(Boolean),
