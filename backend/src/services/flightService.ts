@@ -98,7 +98,11 @@ async function pushAlert(monitorSessionId: string, alert: object): Promise<void>
     [monitorSessionId, JSON.stringify({ position_alert: alert, alerted_at: new Date().toISOString() })]
   );
 
-  await broadcast(monitorSessionId, { type: "position_alert", ...(alert as object) });
+  await broadcast(monitorSessionId, {
+    type: "position_alert",
+    ...(alert as object),
+  });
+}
 
 async function checkImmediateHorizon(
   current: { lat: number; lon: number },
