@@ -3,7 +3,6 @@ import { Request, Response } from "express";
 import { v4 as uuidv4 } from "uuid";
 import { pool } from "../config/db";
 import { computeZones, DroneThresholds, BBox } from "../services/zoneEngine";
-import { createSession, registerClient } from "../services/monitorService";
 import { auditLog } from "../services/auditService";
 import { createSession, registerClient, getSession, getSnapshot } from "../services/monitorService";
 
