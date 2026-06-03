@@ -97,11 +97,12 @@ export async function zonesStreamHandler(req: Request, res: Response) {
   const ping = setInterval(() => { try { res.write(": ping\n\n"); } catch { clearInterval(ping); } }, 30_000);
   res.on("close", () => clearInterval(ping));
 
-  const registered = registerClient(sessionId, res);
-  if (!registered) {
-    const bbox: BBox             = sessionRow.bbox;
-    const thresholds: DroneThresholds = sessionRow.thresholds;
-    await createSession(sessionId, bbox, thresholds);
-    registerClient(sessionId, res);
+  const session = await getSession(sessionId);
+   if (!session) {
+     const bbox: BBox              = sessionRow.bbox;
+     const thresholds: DroneThresholds = sessionRow.thresholds;
+     await createSession(sessionId, bbox, thresholds);
+   }
+   registerClient(sessionId, res);
   }
-}
+
