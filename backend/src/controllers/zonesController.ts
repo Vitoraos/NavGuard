@@ -89,11 +89,12 @@ export async function zonesStreamHandler(req: Request, res: Response) {
   res.setHeader("X-Accel-Buffering", "no");
   res.flushHeaders();
 
-  if (sessionRow.last_snapshot) {
-    res.write(`data: ${JSON.stringify({ ...sessionRow.last_snapshot, type: "reconnect_snapshot" })}\n\n`);
-  } else {
-    res.write(`data: ${JSON.stringify({ type: "connected", session_id: sessionId })}\n\n`);
-  }
+  const snapshot = await getSnapshot(sessionId);
+if (snapshot) {
+  res.write(`data: ${JSON.stringify({ ...(snapshot as object), type: "reconnect_snapshot" })}\n\n`);
+} else {
+  res.write(`data: ${JSON.stringify({ type: "connected", session_id: sessionId })}\n\n`);
+}
 
   const ping = setInterval(() => { try { res.write(": ping\n\n"); } catch { clearInterval(ping); } }, 30_000);
   res.on("close", () => clearInterval(ping));
