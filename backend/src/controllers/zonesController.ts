@@ -5,6 +5,7 @@ import { pool } from "../config/db";
 import { computeZones, DroneThresholds, BBox } from "../services/zoneEngine";
 import { createSession, registerClient } from "../services/monitorService";
 import { auditLog } from "../services/auditService";
+import { createSession, registerClient, getSession, getSnapshot } from "../services/monitorService";
 
 export async function zonesHandler(req: Request, res: Response) {
   try {
@@ -88,20 +89,22 @@ export async function zonesStreamHandler(req: Request, res: Response) {
   res.setHeader("X-Accel-Buffering", "no");
   res.flushHeaders();
 
-  if (sessionRow.last_snapshot) {
-    res.write(`data: ${JSON.stringify({ ...sessionRow.last_snapshot, type: "reconnect_snapshot" })}\n\n`);
-  } else {
-    res.write(`data: ${JSON.stringify({ type: "connected", session_id: sessionId })}\n\n`);
-  }
+  const snapshot = await getSnapshot(sessionId);
+if (snapshot) {
+  res.write(`data: ${JSON.stringify({ ...(snapshot as object), type: "reconnect_snapshot" })}\n\n`);
+} else {
+  res.write(`data: ${JSON.stringify({ type: "connected", session_id: sessionId })}\n\n`);
+}
 
   const ping = setInterval(() => { try { res.write(": ping\n\n"); } catch { clearInterval(ping); } }, 30_000);
   res.on("close", () => clearInterval(ping));
 
-  const registered = registerClient(sessionId, res);
-  if (!registered) {
-    const bbox: BBox             = sessionRow.bbox;
-    const thresholds: DroneThresholds = sessionRow.thresholds;
-    await createSession(sessionId, bbox, thresholds);
-    registerClient(sessionId, res);
+  const session = await getSession(sessionId);
+   if (!session) {
+     const bbox: BBox              = sessionRow.bbox;
+     const thresholds: DroneThresholds = sessionRow.thresholds;
+     await createSession(sessionId, bbox, thresholds);
+   }
+   registerClient(sessionId, res);
   }
-}
+
