@@ -1,0 +1,470 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>API Documentation — NavGuard</title>
+  <meta name="description" content="Complete API reference for NavGuard drone compliance platform. Endpoints, request schemas, and response formats for BVLOS airspace operations.">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="css/main.css">
+</head>
+<body>
+  <nav class="nav">
+    <div class="container nav-inner">
+      <a href="index.html" class="nav-logo"><div class="nav-logo-icon">N</div><span>NavGuard</span></a>
+      <div class="nav-links">
+        <a href="index.html" class="nav-link">Home</a>
+        <a href="index.html#features" class="nav-link">Features</a>
+        <a href="docs.html" class="nav-link" style="color: var(--text-primary);">Docs</a>
+        <a href="index.html#infrastructure" class="nav-link">Infrastructure</a>
+      </div>
+      <button class="mobile-menu-btn" aria-label="Open menu">
+        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg>
+      </button>
+    </div>
+  </nav>
+
+  <div class="mobile-nav">
+    <div class="mobile-nav-header">
+      <a href="index.html" class="nav-logo"><div class="nav-logo-icon">N</div><span>NavGuard</span></a>
+      <button class="mobile-nav-close" aria-label="Close menu">
+        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+      </button>
+    </div>
+    <ul class="mobile-nav-links">
+      <li><a href="index.html" class="mobile-nav-link">Home</a></li>
+      <li><a href="index.html#features" class="mobile-nav-link">Features</a></li>
+      <li><a href="docs.html" class="mobile-nav-link">Docs</a></li>
+    </ul>
+  </div>
+
+  <div class="docs-layout">
+    <aside class="docs-sidebar">
+      <div class="docs-sidebar-header">Overview</div>
+      <ul class="docs-nav">
+        <li><button class="docs-nav-item active" data-target="getting-started">Getting Started</button></li>
+        <li><button class="docs-nav-item" data-target="authentication">Authentication</button></li>
+        <li><button class="docs-nav-item" data-target="data-model">Data Model</button></li>
+      </ul>
+      <div class="docs-sidebar-header" style="margin-top: var(--space-6);">Endpoints</div>
+      <ul class="docs-nav">
+        <li><button class="docs-nav-item" data-target="endpoints-scan">POST /scan</button></li>
+        <li><button class="docs-nav-item" data-target="endpoints-zones">POST /zones</button></li>
+        <li><button class="docs-nav-item" data-target="endpoints-zones-stream">GET /zones/stream</button></li>
+        <li><button class="docs-nav-item" data-target="endpoints-flight">Flight Sessions</button>
+          <ul class="docs-nav-sub">
+            <li><button class="docs-nav-sub-item" data-target="endpoints-flight-start">POST /flight/start</button></li>
+            <li><button class="docs-nav-sub-item" data-target="endpoints-flight-position">POST /flight/:id/position</button></li>
+            <li><button class="docs-nav-sub-item" data-target="endpoints-flight-contingency">POST /flight/:id/contingency</button></li>
+            <li><button class="docs-nav-sub-item" data-target="endpoints-flight-end">DELETE /flight/:id</button></li>
+          </ul>
+        </li>
+        <li><button class="docs-nav-item" data-target="endpoints-health">GET /health</button></li>
+      </ul>
+      <div class="docs-sidebar-header" style="margin-top: var(--space-6);">Reference</div>
+      <ul class="docs-nav">
+        <li><button class="docs-nav-item" data-target="errors">Error Codes</button></li>
+        <li><button class="docs-nav-item" data-target="thresholds">Weather Thresholds</button></li>
+        <li><button class="docs-nav-item" data-target="altitude-bands">Altitude Bands</button></li>
+      </ul>
+    </aside>
+
+    <main class="docs-main">
+      <section id="getting-started" class="docs-section">
+        <h1 class="docs-section-title">Getting Started</h1>
+        <p class="docs-section-desc">NavGuard provides real-time 3D airspace compliance for BVLOS drone operations. The API is organized around REST principles with JSON payloads and GeoJSON geometries.</p>
+        <h3 style="font-size: var(--text-xl); font-weight: var(--weight-semibold); margin: var(--space-8) 0 var(--space-4);">Base URL</h3>
+        <div class="code-block"><div class="code-body"><pre>https://api.navguard.io/api</pre></div></div>
+        <h3 style="font-size: var(--text-xl); font-weight: var(--weight-semibold); margin: var(--space-8) 0 var(--space-4);">Quick Start</h3>
+        <p style="color: var(--text-secondary); margin-bottom: var(--space-4);">1. Obtain an API key from your dashboard<br>2. Call <code>/scan</code> to validate a flight corridor<br>3. Start a flight session with <code>/flight/start</code><br>4. Stream position updates to <code>/flight/:id/position</code></p>
+        <div class="code-block">
+          <div class="code-header"><span class="code-lang">JavaScript</span><button class="code-copy"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect width="14" height="14" x="8" y="8" rx="2" ry="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/></svg><span>Copy</span></button></div>
+          <div class="code-body"><pre><span class="keyword">const</span> response = <span class="keyword">await</span> fetch(<span class="string">'https://api.navguard.io/api/scan'</span>, {
+  method: <span class="string">'POST'</span>,
+  headers: {
+    <span class="string">'Content-Type'</span>: <span class="string">'application/json'</span>,
+    <span class="string">'x-api-key'</span>: <span class="string">'ng_live_your_key_here'</span>
+  },
+  body: JSON.stringify({
+    origin: { lat: <span class="number">32.7767</span>, lon: <span class="number">-96.7970</span> },
+    destination: { lat: <span class="number">32.9</span>, lon: <span class="number">-96.5</span> },
+    altitude_ceiling: <span class="number">400</span>,
+    buffer_km: <span class="number">10</span>,
+    start_time: <span class="keyword">new</span> Date().toISOString()
+  })
+});
+<span class="keyword">const</span> airspace = <span class="keyword">await</span> response.json();</pre></div>
+        </div>
+      </section>
+
+      <section id="authentication" class="docs-section">
+        <h1 class="docs-section-title">Authentication</h1>
+        <p class="docs-section-desc">All API requests require an API key passed via the <code>x-api-key</code> header. Keys are scoped to your organization and rate-limited per tier.</p>
+        <div class="code-block"><div class="code-header"><span class="code-lang">Headers</span></div><div class="code-body"><pre>x-api-key: ng_live_xxxxxxxxxxxxxxxx</pre></div></div>
+        <div class="docs-params" style="margin-top: var(--space-8);">
+          <div class="docs-params-title">Response Codes</div>
+          <table class="docs-table"><thead><tr><th>Status</th><th>Description</th></tr></thead><tbody>
+            <tr><td>401</td><td>Missing API key</td></tr>
+            <tr><td>403</td><td>Invalid or revoked API key</td></tr>
+            <tr><td>429</td><td>Rate limit exceeded</td></tr>
+          </tbody></table>
+        </div>
+      </section>
+
+      <section id="data-model" class="docs-section">
+        <h1 class="docs-section-title">Data Model</h1>
+        <p class="docs-section-desc">NavGuard uses standard GeoJSON for all spatial data and ISO 8601 timestamps. Altitudes are in feet AGL unless specified as MSL.</p>
+        <div class="docs-params">
+          <div class="docs-params-title">Core Types</div>
+          <table class="docs-table"><thead><tr><th>Type</th><th>Format</th><th>Example</th></tr></thead><tbody>
+            <tr><td>LatLon</td><td><code>{ lat: number, lon: number }</code></td><td><code>{ lat: 32.7767, lon: -96.7970 }</code></td></tr>
+            <tr><td>GeoJSON</td><td>RFC 7946 compliant</td><td>Polygon, Point, LineString</td></tr>
+            <tr><td>Timestamp</td><td>ISO 8601 UTC</td><td><code>2026-06-08T14:00:00Z</code></td></tr>
+            <tr><td>Altitude</td><td>Feet (integer)</td><td><code>400</code> = 400ft AGL</td></tr>
+          </tbody></table>
+        </div>
+      </section>
+
+      <section id="endpoints-scan" class="docs-section">
+        <h1 class="docs-section-title">POST /scan</h1>
+        <p class="docs-section-desc">Pre-flight airspace analysis. Returns safe airspace polygons, weather-restricted windows, regulatory restrictions, and optional contingency validation.</p>
+        <div class="docs-endpoint">
+          <div class="docs-endpoint-header"><span class="tag tag-method-post">POST</span><span class="docs-endpoint-path">/api/scan</span></div>
+          <div class="docs-params">
+            <div class="docs-params-title">Request Body</div>
+            <table class="docs-table"><thead><tr><th>Parameter</th><th>Type</th><th>Required</th><th>Description</th></tr></thead><tbody>
+              <tr><td>origin</td><td>LatLon</td><td><span class="badge badge-success">Yes</span></td><td>Flight origin coordinates</td></tr>
+              <tr><td>destination</td><td>LatLon</td><td><span class="badge badge-success">Yes</span></td><td>Flight destination coordinates</td></tr>
+              <tr><td>altitude_floor</td><td>number</td><td><span class="badge">No</span></td><td>Minimum altitude in feet (default: 0)</td></tr>
+              <tr><td>altitude_ceiling</td><td>number</td><td><span class="badge">No</span></td><td>Maximum altitude in feet (default: 400)</td></tr>
+              <tr><td>buffer_km</td><td>number</td><td><span class="badge">No</span></td><td>Corridor buffer in km, 1-50 (default: 10)</td></tr>
+              <tr><td>start_time</td><td>string</td><td><span class="badge badge-success">Yes</span></td><td>ISO 8601 flight start time</td></tr>
+              <tr><td>thresholds</td><td>object</td><td><span class="badge">No</span></td><td>Weather limits: max_wind_mph, max_precip, min_visibility</td></tr>
+              <tr><td>contingency_landing</td><td>LatLon</td><td><span class="badge">No</span></td><td>Emergency landing point to validate</td></tr>
+              <tr><td>ground_speed_kmh</td><td>number</td><td><span class="badge">No</span></td><td>Drone speed for ETA estimation (default: 48)</td></tr>
+            </tbody></table>
+          </div>
+          <div class="code-block">
+            <div class="code-header"><span class="code-lang">Request</span><button class="code-copy"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect width="14" height="14" x="8" y="8" rx="2" ry="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/></svg><span>Copy</span></button></div>
+            <div class="code-body"><pre>{
+  <span class="key">"origin"</span>: {<span class="key">"lat"</span>: <span class="number">32.7767</span>, <span class="key">"lon"</span>: <span class="number">-96.7970</span>},
+  <span class="key">"destination"</span>: {<span class="key">"lat"</span>: <span class="number">32.9</span>, <span class="key">"lon"</span>: <span class="number">-96.5</span>},
+  <span class="key">"altitude_floor"</span>: <span class="number">0</span>,
+  <span class="key">"altitude_ceiling"</span>: <span class="number">400</span>,
+  <span class="key">"buffer_km"</span>: <span class="number">10</span>,
+  <span class="key">"start_time"</span>: <span class="string">"2026-06-08T14:00:00Z"</span>,
+  <span class="key">"thresholds"</span>: {
+    <span class="key">"max_wind_mph"</span>: <span class="number">25</span>,
+    <span class="key">"max_precip"</span>: <span class="number">2</span>,
+    <span class="key">"min_visibility"</span>: <span class="number">1000</span>
+  },
+  <span class="key">"contingency_landing"</span>: {<span class="key">"lat"</span>: <span class="number">32.85</span>, <span class="key">"lon"</span>: <span class="number">-96.65</span>}
+}</pre></div>
+          </div>
+          <div class="docs-responses">
+            <div class="docs-responses-title">200 OK — Path Clear</div>
+            <div class="code-block"><div class="code-header"><span class="code-lang">JSON</span></div><div class="code-body"><pre>{
+  <span class="key">"safe_airspace"</span>: { <span class="comment">/* GeoJSON Polygon */</span> },
+  <span class="key">"corridor"</span>: { <span class="comment">/* GeoJSON Polygon — buffered flight path */</span> },
+  <span class="key">"no_fly"</span>: {<span class="key">"regulatory"</span>: <span class="keyword">null</span>, <span class="key">"weather"</span>: <span class="keyword">null</span>},
+  <span class="key">"restrictions"</span>: [],
+  <span class="key">"path_connected"</span>: <span class="keyword">true</span>,
+  <span class="key">"has_weather_warning"</span>: <span class="keyword">false</span>,
+  <span class="key">"restricted_windows"</span>: [],
+  <span class="key">"flight_window"</span>: {
+    <span class="key">"start"</span>: <span class="string">"2026-06-08T14:00:00.000Z"</span>,
+    <span class="key">"end"</span>: <span class="string">"2026-06-08T14:22:00.000Z"</span>,
+    <span class="key">"estimated_minutes"</span>: <span class="number">22</span>,
+    <span class="key">"speed_kmh"</span>: <span class="number">48</span>
+  },
+  <span class="key">"weather"</span>: {
+    <span class="key">"data_freshness"</span>: <span class="string">"2026-06-08T13:30:00.000Z"</span>,
+    <span class="key">"stale"</span>: <span class="keyword">false</span>,
+    <span class="key">"stale_minutes"</span>: <span class="number">5</span>
+  },
+  <span class="key">"contingency"</span>: {
+    <span class="key">"cleared"</span>: <span class="keyword">true</span>,
+    <span class="key">"restrictions"</span>: [],
+    <span class="key">"weather_clear"</span>: <span class="keyword">true</span>,
+    <span class="key">"no_fly"</span>: {<span class="key">"regulatory"</span>: <span class="keyword">null</span>, <span class="key">"weather"</span>: <span class="keyword">null</span>}
+  }
+}</pre></div></div>
+          </div>
+          <div class="docs-responses">
+            <div class="docs-responses-title">422 Unprocessable — Path Blocked</div>
+            <div class="code-block"><div class="code-header"><span class="code-lang">JSON</span></div><div class="code-body"><pre>{
+  <span class="key">"error"</span>: <span class="string">"flight_path_blocked"</span>,
+  <span class="key">"reason"</span>: <span class="string">"Airspace or weather restriction creates disconnected safe space."</span>,
+  <span class="key">"restricted_windows"</span>: [
+    {<span class="key">"from_minute"</span>: <span class="number">5</span>, <span class="key">"to_minute"</span>: <span class="number">12</span>, <span class="key">"peak_wind"</span>: <span class="number">31.2</span>, <span class="key">"min_visibility"</span>: <span class="number">800</span>}
+  ],
+  <span class="key">"safe_fragments"</span>: { <span class="comment">/* GeoJSON MultiPolygon */</span> },
+  <span class="key">"corridor"</span>: { <span class="comment">/* GeoJSON Polygon */</span> },
+  <span class="key">"no_fly"</span>: {
+    <span class="key">"regulatory"</span>: { <span class="comment">/* GeoJSON Polygon — TFR zone */</span> },
+    <span class="key">"weather"</span>: { <span class="comment">/* GeoJSON Polygon — weather restriction */</span> }
+  }
+}</pre></div></div>
+          </div>
+          <div class="docs-responses">
+            <div class="docs-responses-title">503 Service Unavailable — Data Stale</div>
+            <div class="code-block"><div class="code-header"><span class="code-lang">JSON</span></div><div class="code-body"><pre>{
+  <span class="key">"error"</span>: <span class="string">"airspace_data_stale"</span>,
+  <span class="key">"last_synced"</span>: <span class="string">"2026-06-08T12:00:00.000Z"</span>,
+  <span class="key">"message"</span>: <span class="string">"TFR data older than 15 minutes. Do not use for active flight planning."</span>
+}</pre></div></div>
+          </div>
+        </div>
+      </section>
+
+      <section id="endpoints-zones" class="docs-section">
+        <h1 class="docs-section-title">POST /zones</h1>
+        <p class="docs-section-desc">Create a real-time weather monitoring session for a geographic bounding box. Returns a session ID used to open an SSE stream.</p>
+        <div class="docs-endpoint">
+          <div class="docs-endpoint-header"><span class="tag tag-method-post">POST</span><span class="docs-endpoint-path">/api/zones</span></div>
+          <div class="docs-params">
+            <div class="docs-params-title">Request Body</div>
+            <table class="docs-table"><thead><tr><th>Parameter</th><th>Type</th><th>Required</th><th>Description</th></tr></thead><tbody>
+              <tr><td>bbox</td><td>object</td><td><span class="badge badge-success">Yes</span></td><td>{ minLat, maxLat, minLon, maxLon }</td></tr>
+              <tr><td>thresholds</td><td>object</td><td><span class="badge">No</span></td><td>{ max_wind_mph, max_precip, min_visibility }</td></tr>
+            </tbody></table>
+          </div>
+          <div class="code-block"><div class="code-header"><span class="code-lang">JSON</span></div><div class="code-body"><pre>{
+  <span class="key">"bbox"</span>: {
+    <span class="key">"minLat"</span>: <span class="number">32.0</span>,
+    <span class="key">"maxLat"</span>: <span class="number">33.5</span>,
+    <span class="key">"minLon"</span>: <span class="number">-97.5</span>,
+    <span class="key">"maxLon"</span>: <span class="number">-96.0</span>
+  },
+  <span class="key">"thresholds"</span>: {
+    <span class="key">"max_wind_mph"</span>: <span class="number">25</span>,
+    <span class="key">"max_precip"</span>: <span class="number">2</span>,
+    <span class="key">"min_visibility"</span>: <span class="number">1000</span>
+  }
+}</pre></div></div>
+          <div class="docs-responses">
+            <div class="docs-responses-title">200 OK</div>
+            <div class="code-block"><div class="code-header"><span class="code-lang">JSON</span></div><div class="code-body"><pre>{
+  <span class="key">"session_id"</span>: <span class="string">"550e8400-e29b-41d4-a716-446655440000"</span>,
+  <span class="key">"stream_url"</span>: <span class="string">"/api/zones/stream/550e8400-e29b-41d4-a716-446655440000"</span>,
+  <span class="key">"safe_airspace"</span>: { <span class="comment">/* GeoJSON Polygon */</span> },
+  <span class="key">"no_fly_zones"</span>: [{ <span class="comment">/* GeoJSON Feature */</span> }],
+  <span class="key">"violated_points"</span>: [
+    {<span class="key">"id"</span>: <span class="number">12345</span>, <span class="key">"lat"</span>: <span class="number">32.7767</span>, <span class="key">"lon"</span>: <span class="number">-96.7970</span>, <span class="key">"wind_mph"</span>: <span class="number">31.2</span>, <span class="key">"precip"</span>: <span class="number">0.0</span>, <span class="key">"visibility"</span>: <span class="number">9999</span>, <span class="key">"reasons"</span>: [<span class="string">"Wind 31.2 mph > 25 mph limit"</span>]}
+  ],
+  <span class="key">"thresholds"</span>: { <span class="comment">/* Echoed thresholds */</span> },
+  <span class="key">"bbox"</span>: { <span class="comment">/* Echoed bbox */</span> },
+  <span class="key">"computed_at"</span>: <span class="string">"2026-06-08T13:34:00.000Z"</span>
+}</pre></div></div>
+          </div>
+        </div>
+      </section>
+
+      <section id="endpoints-zones-stream" class="docs-section">
+        <h1 class="docs-section-title">GET /zones/stream/:sessionId</h1>
+        <p class="docs-section-desc">Server-Sent Events stream for real-time zone updates. Reconnects receive the last snapshot automatically. Polls every 5 minutes with distributed locking via Redis.</p>
+        <div class="docs-endpoint">
+          <div class="docs-endpoint-header"><span class="tag tag-method-get">GET</span><span class="docs-endpoint-path">/api/zones/stream/:sessionId</span></div>
+          <div class="docs-params">
+            <div class="docs-params-title">Path Parameters</div>
+            <table class="docs-table"><thead><tr><th>Parameter</th><th>Type</th><th>Description</th></tr></thead><tbody>
+              <tr><td>sessionId</td><td>UUID</td><td>Session ID from POST /zones</td></tr>
+            </tbody></table>
+          </div>
+          <div class="code-block"><div class="code-header"><span class="code-lang">JavaScript</span></div><div class="code-body"><pre><span class="keyword">const</span> evtSource = <span class="keyword">new</span> EventSource(
+  <span class="string">'https://api.navguard.io/api/zones/stream/550e8400-e29b-41d4-a716-446655440000'</span>,
+  { headers: { <span class="key">'x-api-key'</span>: <span class="string">'ng_live_...'</span> } }
+);
+evtSource.onmessage = (event) => {
+  <span class="keyword">const</span> data = JSON.parse(event.data);
+  console.log(data.type); <span class="comment">// "zone_update", "position_alert", "reconnect_snapshot"</span>
+};
+evtSource.onerror = () => {
+  <span class="comment">// Auto-reconnects. Check session expiry if persistent.</span>
+};</pre></div></div>
+          <div class="docs-responses">
+            <div class="docs-responses-title">Event: zone_update</div>
+            <div class="code-block"><div class="code-header"><span class="code-lang">JSON</span></div><div class="code-body"><pre>{
+  <span class="key">"type"</span>: <span class="string">"zone_update"</span>,
+  <span class="key">"timestamp"</span>: <span class="string">"2026-06-08T13:35:00.000Z"</span>,
+  <span class="key">"alert"</span>: <span class="keyword">true</span>,
+  <span class="key">"new_violations"</span>: [
+    {<span class="key">"id"</span>: <span class="number">12346</span>, <span class="key">"lat"</span>: <span class="number">32.8</span>, <span class="key">"lon"</span>: <span class="number">-96.7</span>, <span class="key">"reasons"</span>: [...]}
+  ],
+  <span class="key">"recovered_ids"</span>: [<span class="number">12345</span>],
+  <span class="key">"safe_airspace"</span>: { <span class="comment">/* GeoJSON */</span> },
+  <span class="key">"no_fly_zones"</span>: [...],
+  <span class="key">"violated_points"</span>: [...]
+}</pre></div></div>
+          </div>
+        </div>
+      </section>
+
+      <section id="endpoints-flight" class="docs-section">
+        <h1 class="docs-section-title">Flight Sessions</h1>
+        <p class="docs-section-desc">Stateful flight management for active BVLOS operations. Start a session, stream positions, update contingency plans, and end the session when landed.</p>
+      </section>
+
+      <section id="endpoints-flight-start" class="docs-section">
+        <div class="docs-endpoint">
+          <div class="docs-endpoint-header"><span class="tag tag-method-post">POST</span><span class="docs-endpoint-path">/api/flight/start</span></div>
+          <p class="docs-endpoint-desc">Initialize a flight session with destination, altitude ceiling, and optional safe airspace polygon.</p>
+          <div class="docs-params">
+            <div class="docs-params-title">Request Body</div>
+            <table class="docs-table"><thead><tr><th>Parameter</th><th>Type</th><th>Required</th><th>Description</th></tr></thead><tbody>
+              <tr><td>destination</td><td>LatLon</td><td><span class="badge badge-success">Yes</span></td><td>Target landing coordinates</td></tr>
+              <tr><td>altitude_ceiling</td><td>number</td><td><span class="badge">No</span></td><td>Max altitude in feet (0-10000, default: 400)</td></tr>
+              <tr><td>safe_airspace</td><td>GeoJSON</td><td><span class="badge">No</span></td><td>Pre-approved safe zone polygon</td></tr>
+              <tr><td>monitor_session_id</td><td>string</td><td><span class="badge">No</span></td><td>Link to active /zones session for SSE alerts</td></tr>
+            </tbody></table>
+          </div>
+          <div class="docs-responses">
+            <div class="docs-responses-title">201 Created</div>
+            <div class="code-block"><div class="code-header"><span class="code-lang">JSON</span></div><div class="code-body"><pre>{
+  <span class="key">"flight_session_id"</span>: <span class="string">"sess_abc123"</span>,
+  <span class="key">"expires_at"</span>: <span class="string">"2026-06-08T15:34:00.000Z"</span>,
+  <span class="key">"message"</span>: <span class="string">"Flight session started. Send GPS position to /api/flight/:id/position"</span>
+}</pre></div></div>
+          </div>
+        </div>
+      </section>
+
+      <section id="endpoints-flight-position" class="docs-section">
+        <div class="docs-endpoint">
+          <div class="docs-endpoint-header"><span class="tag tag-method-post">POST</span><span class="docs-endpoint-path">/api/flight/:id/position</span></div>
+          <p class="docs-endpoint-desc">Stream GPS position updates during flight. Returns safety assessment, weather status, and remaining ETA.</p>
+          <div class="docs-params">
+            <div class="docs-params-title">Request Body</div>
+            <table class="docs-table"><thead><tr><th>Parameter</th><th>Type</th><th>Required</th><th>Description</th></tr></thead><tbody>
+              <tr><td>lat</td><td>number</td><td><span class="badge badge-success">Yes</span></td><td>Current latitude</td></tr>
+              <tr><td>lon</td><td>number</td><td><span class="badge badge-success">Yes</span></td><td>Current longitude</td></tr>
+              <tr><td>altitude</td><td>number</td><td><span class="badge">No</span></td><td>Altitude AGL in feet (default: 0)</td></tr>
+              <tr><td>ground_speed_ms</td><td>number</td><td><span class="badge">No</span></td><td>Ground speed m/s (default: 10)</td></tr>
+              <tr><td>heading</td><td>number</td><td><span class="badge">No</span></td><td>Heading in degrees for horizon check</td></tr>
+              <tr><td>thresholds</td><td>object</td><td><span class="badge">No</span></td><td>Weather thresholds override</td></tr>
+            </tbody></table>
+          </div>
+          <div class="docs-responses">
+            <div class="docs-responses-title">200 OK</div>
+            <div class="code-block"><div class="code-header"><span class="code-lang">JSON</span></div><div class="code-body"><pre>{
+  <span class="key">"safe"</span>: <span class="keyword">true</span>,
+  <span class="key">"inside_safe_airspace"</span>: <span class="keyword">true</span>,
+  <span class="key">"new_tfr_activated"</span>: <span class="keyword">false</span>,
+  <span class="key">"tfr_name"</span>: <span class="keyword">null</span>,
+  <span class="key">"current_weather"</span>: {
+    <span class="key">"restricted"</span>: <span class="keyword">false</span>,
+    <span class="key">"wind_mph"</span>: <span class="number">12.5</span>,
+    <span class="key">"precip"</span>: <span class="number">0.0</span>,
+    <span class="key">"visibility"</span>: <span class="number">10000</span>,
+    <span class="key">"reasons"</span>: []
+  },
+  <span class="key">"remaining_minutes"</span>: <span class="number">18</span>,
+  <span class="key">"restricted"</span>: {<span class="key">"windows"</span>: [], <span class="key">"active"</span>: <span class="keyword">null</span>},
+  <span class="key">"path_weather_safe"</span>: <span class="keyword">true</span>,
+  <span class="key">"alert_pushed"</span>: <span class="keyword">false</span>,
+  <span class="key">"checked_at"</span>: <span class="string">"2026-06-08T13:34:00.000Z"</span>
+}</pre></div></div>
+          </div>
+        </div>
+      </section>
+
+      <section id="endpoints-flight-contingency" class="docs-section">
+        <div class="docs-endpoint">
+          <div class="docs-endpoint-header"><span class="tag tag-method-post">POST</span><span class="docs-endpoint-path">/api/flight/:id/contingency</span></div>
+          <p class="docs-endpoint-desc">Update contingency landing point mid-flight. Validates weather, regulatory restrictions, and safe airspace within 500m buffer.</p>
+          <div class="docs-params">
+            <div class="docs-params-title">Request Body</div>
+            <table class="docs-table"><thead><tr><th>Parameter</th><th>Type</th><th>Required</th><th>Description</th></tr></thead><tbody>
+              <tr><td>contingency_landing</td><td>LatLon</td><td><span class="badge badge-success">Yes</span></td><td>Emergency landing coordinates</td></tr>
+              <tr><td>thresholds</td><td>object</td><td><span class="badge">No</span></td><td>Weather thresholds override</td></tr>
+            </tbody></table>
+          </div>
+          <div class="docs-responses">
+            <div class="docs-responses-title">200 OK</div>
+            <div class="code-block"><div class="code-header"><span class="code-lang">JSON</span></div><div class="code-body"><pre>{
+  <span class="key">"flight_session_id"</span>: <span class="string">"sess_abc123"</span>,
+  <span class="key">"contingency_landing"</span>: {<span class="key">"lat"</span>: <span class="number">32.85</span>, <span class="key">"lon"</span>: <span class="number">-96.65</span>},
+  <span class="key">"cleared"</span>: <span class="keyword">true</span>,
+  <span class="key">"weather_clear"</span>: <span class="keyword">true</span>,
+  <span class="key">"restrictions"</span>: [],
+  <span class="key">"no_fly"</span>: {<span class="key">"regulatory"</span>: <span class="keyword">null</span>, <span class="key">"weather"</span>: <span class="keyword">null</span>},
+  <span class="key">"checked_at"</span>: <span class="string">"2026-06-08T13:34:00.000Z"</span>
+}</pre></div></div>
+          </div>
+        </div>
+      </section>
+
+      <section id="endpoints-flight-end" class="docs-section">
+        <div class="docs-endpoint">
+          <div class="docs-endpoint-header"><span class="tag tag-method-delete">DELETE</span><span class="docs-endpoint-path">/api/flight/:id</span></div>
+          <p class="docs-endpoint-desc">End a flight session immediately. Sets expires_at to NOW() and generates final audit log entry.</p>
+          <div class="docs-responses">
+            <div class="docs-responses-title">200 OK</div>
+            <div class="code-block"><div class="code-header"><span class="code-lang">JSON</span></div><div class="code-body"><pre>{
+  <span class="key">"message"</span>: <span class="string">"Flight session ended"</span>,
+  <span class="key">"landed_at"</span>: <span class="string">"2026-06-08T13:34:00.000Z"</span>
+}</pre></div></div>
+          </div>
+        </div>
+      </section>
+
+      <section id="endpoints-health" class="docs-section">
+        <h1 class="docs-section-title">GET /health</h1>
+        <p class="docs-section-desc">Health check endpoint. No authentication required.</p>
+        <div class="docs-endpoint">
+          <div class="docs-endpoint-header"><span class="tag tag-method-get">GET</span><span class="docs-endpoint-path">/api/health</span></div>
+          <div class="docs-responses">
+            <div class="docs-responses-title">200 OK</div>
+            <div class="code-block"><div class="code-header"><span class="code-lang">JSON</span></div><div class="code-body"><pre>{
+  <span class="key">"status"</span>: <span class="string">"ok"</span>,
+  <span class="key">"message"</span>: <span class="string">"Drone Compliance Core Backend is alive"</span>
+}</pre></div></div>
+          </div>
+        </div>
+      </section>
+
+      <section id="errors" class="docs-section">
+        <h1 class="docs-section-title">Error Codes</h1>
+        <p class="docs-section-desc">Standard HTTP status codes with NavGuard-specific error identifiers.</p>
+        <div class="docs-params">
+          <table class="docs-table"><thead><tr><th>Code</th><th>Status</th><th>Meaning</th></tr></thead><tbody>
+            <tr><td>airspace_data_stale</td><td>503</td><td>TFR or weather data exceeds freshness threshold</td></tr>
+            <tr><td>flight_path_blocked</td><td>422</td><td>No flyable path exists between origin and destination</td></tr>
+            <tr><td>Invalid API key</td><td>403</td><td>Authentication failure</td></tr>
+            <tr><td>Flight session expired</td><td>410</td><td>Session TTL exceeded</td></tr>
+            <tr><td>Flight session not found</td><td>404</td><td>Invalid session ID</td></tr>
+          </tbody></table>
+        </div>
+      </section>
+
+      <section id="thresholds" class="docs-section">
+        <h1 class="docs-section-title">Weather Thresholds</h1>
+        <p class="docs-section-desc">Default and configurable limits for flight safety assessment.</p>
+        <div class="docs-params">
+          <table class="docs-table"><thead><tr><th>Parameter</th><th>Default</th><th>Unit</th><th>Description</th></tr></thead><tbody>
+            <tr><td>max_wind_mph</td><td>25</td><td>mph</td><td>Maximum sustained wind speed at altitude band</td></tr>
+            <tr><td>max_precip</td><td>2</td><td>mm/hr</td><td>Maximum precipitation intensity</td></tr>
+            <tr><td>min_visibility</td><td>1000</td><td>meters</td><td>Minimum visibility distance</td></tr>
+          </tbody></table>
+        </div>
+      </section>
+
+      <section id="altitude-bands" class="docs-section">
+        <h1 class="docs-section-title">Altitude Bands</h1>
+        <p class="docs-section-desc">NavGuard analyzes airspace across three atmospheric layers mapped to drone operational altitudes.</p>
+        <div class="docs-params">
+          <table class="docs-table"><thead><tr><th>Band</th><th>Altitude Range</th><th>Weather Source</th></tr></thead><tbody>
+            <tr><td>surface</td><td>0 – 2,500 ft MSL</td><td>Open-Meteo 10m wind, precipitation, visibility</td></tr>
+            <tr><td>925hPa</td><td>2,500 – 5,000 ft MSL</td><td>Pressure-level interpolated forecast</td></tr>
+            <tr><td>850hPa</td><td>5,000+ ft MSL</td><td>Pressure-level interpolated forecast</td></tr>
+          </tbody></table>
+        </div>
+        <p style="margin-top: var(--space-4); color: var(--text-muted); font-size: var(--text-sm);">Note: AGL altitudes are converted to MSL using terrain elevation from the weather grid for accurate band selection.</p>
+      </section>
+    </main>
+  </div>
+  <script src="js/main.js"></script>
+</body>
+</html>

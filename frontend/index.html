@@ -1,0 +1,226 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>NavGuard — Autonomous Airspace Compliance for BVLOS Drones</title>
+  <meta name="description" content="Real-time 3D airspace intelligence, TFR monitoring, and weather-aware routing via API for beyond visual line of sight drone operations.">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="css/main.css">
+</head>
+<body>
+  <nav class="nav">
+    <div class="container nav-inner">
+      <a href="index.html" class="nav-logo">
+        <div class="nav-logo-icon">N</div>
+        <span>NavGuard</span>
+      </a>
+      <div class="nav-links">
+        <a href="#features" class="nav-link">Features</a>
+        <a href="#api" class="nav-link">API</a>
+        <a href="#infrastructure" class="nav-link">Infrastructure</a>
+        <a href="docs.html" class="nav-cta">
+          <span>API Docs</span>
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"/><path d="m12 5 7 7-7 7"/></svg>
+        </a>
+      </div>
+      <button class="mobile-menu-btn" aria-label="Open menu">
+        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg>
+      </button>
+    </div>
+  </nav>
+
+  <div class="mobile-nav">
+    <div class="mobile-nav-header">
+      <a href="index.html" class="nav-logo"><div class="nav-logo-icon">N</div><span>NavGuard</span></a>
+      <button class="mobile-nav-close" aria-label="Close menu">
+        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+      </button>
+    </div>
+    <ul class="mobile-nav-links">
+      <li><a href="#features" class="mobile-nav-link">Features</a></li>
+      <li><a href="#api" class="mobile-nav-link">API</a></li>
+      <li><a href="#infrastructure" class="mobile-nav-link">Infrastructure</a></li>
+      <li><a href="docs.html" class="mobile-nav-link">API Docs</a></li>
+    </ul>
+  </div>
+
+  <section class="hero">
+    <canvas id="heroCanvas" class="hero-canvas"></canvas>
+    <div class="container hero-inner">
+      <div class="hero-content">
+        <div class="hero-eyebrow"><span class="status-dot"></span><span>Live airspace monitoring</span></div>
+        <h1 class="hero-title">Autonomous Airspace Compliance for BVLOS Operations</h1>
+        <p class="hero-subtitle">Real-time 3D airspace intelligence, TFR monitoring, and weather-aware routing. All via a single, precise API built for autonomous flight systems.</p>
+        <div class="hero-actions">
+          <a href="docs.html" class="btn btn-primary btn-lg"><span>View API Docs</span><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"/><path d="m12 5 7 7-7 7"/></svg></a>
+          <a href="#api" class="btn btn-secondary btn-lg">See it in action</a>
+        </div>
+      </div>
+      <div class="hero-visual"></div>
+    </div>
+  </section>
+
+  <section id="features" class="section">
+    <div class="container">
+      <div class="fade-in" style="text-align: center; margin-bottom: var(--space-16);">
+        <h2 style="margin-bottom: var(--space-4);">Everything for compliant flight</h2>
+        <p style="color: var(--text-tertiary); max-width: 600px; margin: 0 auto;">From pre-flight planning to real-time position monitoring, NavGuard handles the complexity of 3D airspace compliance.</p>
+      </div>
+      <div class="features-grid">
+        <div class="card fade-in">
+          <div class="card-icon" style="background: rgba(6, 182, 212, 0.1); color: var(--primary-400);"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="10"/><path d="m9 12 2 2 4-4"/></svg></div>
+          <h3 class="card-title">Pre-flight Airspace Scan</h3>
+          <p class="card-desc">Query <code>/scan</code> to analyze complete flight corridors. Detects TFRs, weather restrictions, and no-fly zones across surface, 925hPa, and 850hPa altitude bands.</p>
+        </div>
+        <div class="card fade-in">
+          <div class="card-icon" style="background: rgba(16, 185, 129, 0.1); color: var(--success);"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg></div>
+          <h3 class="card-title">Real-time SSE Monitoring</h3>
+          <p class="card-desc">Open a persistent stream to <code>/zones/stream</code> for live airspace updates. Redis-backed pub/sub distributes alerts across any number of server instances.</p>
+        </div>
+        <div class="card fade-in">
+          <div class="card-icon" style="background: rgba(59, 130, 246, 0.1); color: var(--info);"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 22s-8-4.5-8-11.8A8 8 0 0 1 12 2a8 8 0 0 1 8 8.2c0 7.3-8 11.8-8 11.8z"/><circle cx="12" cy="10" r="3"/></svg></div>
+          <h3 class="card-title">Flight Session Tracking</h3>
+          <p class="card-desc">Start sessions with <code>/flight/start</code>, stream GPS positions to <code>/flight/:id/position</code>, and receive immediate safety assessments with weather and TFR alerts.</p>
+        </div>
+        <div class="card fade-in">
+          <div class="card-icon" style="background: rgba(245, 158, 11, 0.1); color: var(--warning);"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3Z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg></div>
+          <h3 class="card-title">Contingency Validation</h3>
+          <p class="card-desc">Update emergency landing points mid-flight via <code>/flight/:id/contingency</code>. Validates weather, regulatory restrictions, and safe airspace within 500m buffer zones.</p>
+        </div>
+        <div class="card fade-in">
+          <div class="card-icon" style="background: rgba(239, 68, 68, 0.1); color: var(--danger);"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg></div>
+          <h3 class="card-title">TFR Sync & Alerting</h3>
+          <p class="card-desc">AeroAPI integration pulls active TFRs every 10 minutes. PostGIS spatial queries detect new TFR activation in real-time during active flight sessions.</p>
+        </div>
+        <div class="card fade-in">
+          <div class="card-icon" style="background: rgba(139, 92, 246, 0.1); color: #8b5cf6;"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M20 10c0 6-8 12-8 12s-8-6-8-12a8 8 0 0 1 16 0Z"/><circle cx="12" cy="10" r="3"/></svg></div>
+          <h3 class="card-title">3D Weather Grid</h3>
+          <p class="card-desc">Open-Meteo forecasts synced to a 0.25° grid across 12-hour horizons. Queries join on forecast_time closest to ETA, ensuring time-accurate weather assessment.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section id="api" class="section" style="background: var(--bg-sunken);">
+    <div class="container">
+      <div class="api-preview">
+        <div class="fade-in">
+          <h2 style="margin-bottom: var(--space-4);">Plan a flight in one request</h2>
+          <p style="color: var(--text-tertiary); margin-bottom: var(--space-6);">The <code>/scan</code> endpoint analyzes your entire flight corridor, returning safe airspace polygons, weather-restricted windows, and contingency validation.</p>
+          <ul style="list-style: none; display: flex; flex-direction: column; gap: var(--space-4);">
+            <li style="display: flex; align-items: flex-start; gap: var(--space-3);"><span style="color: var(--success); margin-top: 2px;"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="20 6 9 17 4 12"/></svg></span><span style="font-size: var(--text-sm); color: var(--text-secondary);"><strong style="color: var(--text-primary);">GeoJSON output</strong> — Safe airspace, no-fly zones, and corridor buffers as standard geometries</span></li>
+            <li style="display: flex; align-items: flex-start; gap: var(--space-3);"><span style="color: var(--success); margin-top: 2px;"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="20 6 9 17 4 12"/></svg></span><span style="font-size: var(--text-sm); color: var(--text-secondary);"><strong style="color: var(--text-primary);">Timeline analysis</strong> — Minute-by-minute weather forecast aligned to your flight path and ETA</span></li>
+            <li style="display: flex; align-items: flex-start; gap: var(--space-3);"><span style="color: var(--success); margin-top: 2px;"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="20 6 9 17 4 12"/></svg></span><span style="font-size: var(--text-sm); color: var(--text-secondary);"><strong style="color: var(--text-primary);">Contingency checks</strong> — Validate emergency landing points against weather and regulatory data</span></li>
+          </ul>
+        </div>
+        <div class="code-block fade-in">
+          <div class="code-header"><span class="code-lang">cURL</span><button class="code-copy"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect width="14" height="14" x="8" y="8" rx="2" ry="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/></svg><span>Copy</span></button></div>
+          <div class="code-body"><pre><span class="comment"># Scan a flight corridor from DFW to destination</span>
+curl -X POST https://api.navguard.io/api/scan   -H <span class="string">"Content-Type: application/json"</span>   -H <span class="string">"x-api-key: ng_live_..."</span>   -d <span class="string">'{
+    "origin": {"lat": 32.7767, "lon": -96.7970},
+    "destination": {"lat": 32.9, "lon": -96.5},
+    "altitude_floor": 0,
+    "altitude_ceiling": 400,
+    "buffer_km": 10,
+    "start_time": "2026-06-08T14:00:00Z",
+    "thresholds": {
+      "max_wind_mph": 25,
+      "max_precip": 2,
+      "min_visibility": 1000
+    },
+    "contingency_landing": {"lat": 32.85, "lon": -96.65}
+  }'</span></pre></div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section id="infrastructure" class="section">
+    <div class="container">
+      <div class="fade-in" style="text-align: center; margin-bottom: var(--space-16);">
+        <h2 style="margin-bottom: var(--space-4);">Built for operational scale</h2>
+        <p style="color: var(--text-tertiary); max-width: 600px; margin: 0 auto;">PostGIS spatial queries, Redis-backed SSE streams, and automated data pipelines. Designed for fleets, not prototypes.</p>
+      </div>
+      <div class="stats-grid fade-in">
+        <div class="stat-item"><div class="stat-value">10m</div><div class="stat-label">TFR sync interval</div></div>
+        <div class="stat-item"><div class="stat-value">5m</div><div class="stat-label">Weather grid refresh</div></div>
+        <div class="stat-item"><div class="stat-value">3</div><div class="stat-label">Altitude bands analyzed</div></div>
+        <div class="stat-item"><div class="stat-value">12h</div><div class="stat-label">Forecast horizon</div></div>
+      </div>
+      <div class="divider"></div>
+      <div class="fade-in" style="display: grid; grid-template-columns: repeat(3, 1fr); gap: var(--space-8); margin-top: var(--space-16);">
+        <div style="text-align: center;">
+          <div style="width: 48px; height: 48px; margin: 0 auto var(--space-4); background: rgba(6, 182, 212, 0.1); border-radius: var(--radius-lg); display: flex; align-items: center; justify-content: center;"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="var(--primary-400)" stroke-width="2"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M3 5V19A9 3 0 0 0 21 19V5"/><path d="M3 12A9 3 0 0 0 21 12"/></svg></div>
+          <h4 style="font-size: var(--text-base); margin-bottom: var(--space-2);">PostgreSQL + PostGIS</h4>
+          <p style="font-size: var(--text-sm); color: var(--text-muted);">Spatial indexing, GeoJSON native support, and ST_DWithin queries for real-time proximity detection.</p>
+        </div>
+        <div style="text-align: center;">
+          <div style="width: 48px; height: 48px; margin: 0 auto var(--space-4); background: rgba(16, 185, 129, 0.1); border-radius: var(--radius-lg); display: flex; align-items: center; justify-content: center;"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="var(--success)" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg></div>
+          <h4 style="font-size: var(--text-base); margin-bottom: var(--space-2);">Redis Pub/Sub</h4>
+          <p style="font-size: var(--text-sm); color: var(--text-muted);">Distributed SSE broadcasting with session TTL, snapshot persistence, and automatic reconnection handling.</p>
+        </div>
+        <div style="text-align: center;">
+          <div style="width: 48px; height: 48px; margin: 0 auto var(--space-4); background: rgba(139, 92, 246, 0.1); border-radius: var(--radius-lg); display: flex; align-items: center; justify-content: center;"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#8b5cf6" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg></div>
+          <h4 style="font-size: var(--text-base); margin-bottom: var(--space-2);">Audit-Ready Logging</h4>
+          <p style="font-size: var(--text-sm); color: var(--text-muted);">Fire-and-forget SHA-256 hashed response logging for compliance trails. Never blocks the critical path.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="section cta-section">
+    <div class="container">
+      <div class="fade-in">
+        <h2 class="cta-title">Ready to fly compliant?</h2>
+        <p class="cta-desc">Integrate NavGuard into your GCS or fleet management platform. Full API documentation, request examples, and response schemas available.</p>
+        <div style="display: flex; gap: var(--space-4); justify-content: center; flex-wrap: wrap;">
+          <a href="docs.html" class="btn btn-primary btn-lg"><span>Explore API Docs</span><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"/><path d="m12 5 7 7-7 7"/></svg></a>
+          <a href="#features" class="btn btn-secondary btn-lg">Learn more</a>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <footer class="footer">
+    <div class="container">
+      <div class="footer-grid">
+        <div class="footer-brand">
+          <a href="index.html" class="nav-logo"><div class="nav-logo-icon">N</div><span>NavGuard</span></a>
+          <p class="footer-brand-desc">Autonomous airspace compliance for BVLOS drone operations. Real-time 3D intelligence, TFR monitoring, and weather-aware routing.</p>
+        </div>
+        <div>
+          <h4 class="footer-heading">Product</h4>
+          <ul class="footer-links">
+            <li><a href="#features" class="footer-link">Features</a></li>
+            <li><a href="#api" class="footer-link">API Reference</a></li>
+            <li><a href="docs.html" class="footer-link">Documentation</a></li>
+            <li><a href="#infrastructure" class="footer-link">Infrastructure</a></li>
+          </ul>
+        </div>
+        <div>
+          <h4 class="footer-heading">Resources</h4>
+          <ul class="footer-links">
+            <li><a href="docs.html#getting-started" class="footer-link">Getting Started</a></li>
+            <li><a href="docs.html#endpoints-scan" class="footer-link">Scan Endpoint</a></li>
+            <li><a href="docs.html#endpoints-flight" class="footer-link">Flight Sessions</a></li>
+            <li><a href="docs.html#endpoints-zones" class="footer-link">Zone Monitoring</a></li>
+          </ul>
+        </div>
+        <div>
+          <h4 class="footer-heading">Legal</h4>
+          <ul class="footer-links">
+            <li><a href="#" class="footer-link">Privacy Policy</a></li>
+            <li><a href="#" class="footer-link">Terms of Service</a></li>
+            <li><a href="#" class="footer-link">Compliance</a></li>
+          </ul>
+        </div>
+      </div>
+      <div class="footer-bottom"><span>NavGuard Core Backend</span><span>Built for BVLOS compliance</span></div>
+    </div>
+  </footer>
+  <script src="js/main.js"></script>
+</body>
+</html>
