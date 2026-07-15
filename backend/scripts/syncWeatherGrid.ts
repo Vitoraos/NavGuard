@@ -4,9 +4,23 @@
 // Key columns:
 //   fetched_at    = timestamp when THIS sync run executed (staleness guard)
 //   forecast_time = the actual hour this row represents (e.g. 14:00, 15:00)
+//   altitude_band = 'surface' | '925hPa' | '850hPa'
+//   gust_mph      = wind gust speed, surface only (Open-Meteo doesn't model
+//                   gusts at pressure levels) — NULL for 925hPa/850hPa rows,
+//                   meaning "not modeled," not "no gust."
 //
 // queryWeatherTimeline joins on forecast_time closest to the drone's ETA,
 // so a flight planned 3 hours from now gets the correct forecast conditions.
+//
+// FIX-PRESSURE-BAND: previously this script only ever wrote 'surface' rows
+// (altitude_band was missing from the INSERT column list entirely, so every
+// row silently took the column default). Any query for '925hPa' or '850hPa'
+// — which the app *does* make for flights with a higher ceiling — returned
+// zero rows. Now fetches pressure-level wind and writes one row per band.
+//
+// FIX-GUST: previously only windspeed_10m (sustained wind) was fetched.
+// Gusts are a materially different, often more dangerous, failure mode for
+// small airframes. windgusts_10m is now pulled alongside sustained wind.
 
 import pkg from "pg";
 const { Pool } = pkg;
@@ -22,6 +36,14 @@ const BBOX       = { minLat: 32.0, maxLat: 33.5, minLon: -97.5, maxLon: -96.0 };
 const STEP       = 0.25;
 const HOURS      = 12;
 const BATCH_SIZE = 10;
+
+// FIX-PRESSURE-BAND: altitude bands and the pressure level each maps to.
+// Keep in sync with selectBand() in flightService.ts / ruleService.ts.
+const ALTITUDE_BANDS = [
+  { band: "surface", pressureLevel: null as string | null },
+  { band: "925hPa",  pressureLevel: "925hPa" },
+  { band: "850hPa",  pressureLevel: "850hPa" },
+];
 
 function cellId(lat: number, lon: number): number {
   return Math.round((lat + 90) * 1000) * 1000000 + Math.round((lon + 180) * 1000);
@@ -44,7 +66,9 @@ interface WeatherReading {
   lat:           number;
   lon:           number;
   elevation_m:   number;
+  altitude_band: string;
   wind_mph:      number;
+  gust_mph:      number | null; // null = not modeled at this level (925hPa/850hPa)
   precip:        number;
   visibility:    number;
   forecast_time: string; // ISO string — the hour this row represents
@@ -52,10 +76,13 @@ interface WeatherReading {
 }
 
 interface OpenMeteoHourly {
-  time:           string[];
-  windspeed_10m:  number[];
-  precipitation:  number[];
-  visibility:     number[];
+  time:              string[];
+  windspeed_10m:     number[];
+  windgusts_10m:     number[];
+  precipitation:     number[];
+  visibility:        number[];
+  windspeed_925hPa?: number[];
+  windspeed_850hPa?: number[];
 }
 
 interface OpenMeteoResponse {
@@ -68,10 +95,17 @@ interface OpenMeteoResponse {
 function isValidForecast(data: any): data is OpenMeteoResponse {
   if (!data || !data.hourly) return false;
   const h = data.hourly;
+  // Surface fields are required. Pressure-level fields are validated
+  // separately per-band below since Open-Meteo can drop them independently
+  // (e.g. rate limiting a subset of variables) without failing the whole
+  // response — we don't want a pressure-level hiccup to also throw out
+  // valid surface data.
   if (!Array.isArray(h.time) || !Array.isArray(h.windspeed_10m) ||
+      !Array.isArray(h.windgusts_10m) ||
       !Array.isArray(h.precipitation) || !Array.isArray(h.visibility)) return false;
   if (h.time.length === 0 ||
       h.time.length !== h.windspeed_10m.length ||
+      h.time.length !== h.windgusts_10m.length ||
       h.time.length !== h.precipitation.length ||
       h.time.length !== h.visibility.length) return false;
   return true;
@@ -80,7 +114,15 @@ function isValidForecast(data: any): data is OpenMeteoResponse {
 async function fetchRawWeather(points: GridPoint[], maxRetries = 3): Promise<any[]> {
   const lats = points.map(p => p.lat).join(",");
   const lons  = points.map(p => p.lon).join(",");
-  const url   = `https://api.open-meteo.com/v1/forecast?latitude=${lats}&longitude=${lons}&hourly=windspeed_10m,precipitation,visibility&wind_speed_unit=mph&forecast_days=1&timezone=UTC`;
+  const hourlyParams = [
+    "windspeed_10m",
+    "windgusts_10m",
+    "precipitation",
+    "visibility",
+    "windspeed_925hPa",
+    "windspeed_850hPa",
+  ].join(",");
+  const url = `https://api.open-meteo.com/v1/forecast?latitude=${lats}&longitude=${lons}&hourly=${hourlyParams}&wind_speed_unit=mph&forecast_days=1&timezone=UTC`;
 
   for (let attempt = 1; attempt <= maxRetries; attempt++) {
     try {
@@ -105,6 +147,14 @@ async function fetchRawWeather(points: GridPoint[], maxRetries = 3): Promise<any
   return [];
 }
 
+// FIX-PRESSURE-BAND: emits one reading PER BAND per hour (surface + 925hPa +
+// 850hPa), instead of one reading per hour total. Precip/visibility are
+// surface-only in Open-Meteo's model — there's no per-level equivalent — so
+// every band reuses the surface precip/visibility reading. That's a known
+// simplification: it means precip/visibility restrictions are still
+// effectively surface-based even in the 3D volume, only wind (and gust, at
+// surface) are genuinely altitude-differentiated. Worth revisiting if
+// precip/visibility at altitude turns out to matter for your ops profile.
 function transformToReadings(points: GridPoint[], forecasts: any[]): WeatherReading[] {
   const nowHourISO = new Date().toISOString().slice(0, 13); // "2026-06-03T14"
   const fetchedAt  = new Date().toISOString();              // sync run timestamp
@@ -125,26 +175,45 @@ function transformToReadings(points: GridPoint[], forecasts: any[]): WeatherRead
       return;
     }
 
-    const times     = rawForecast.hourly.time;
-    const startIdx  = times.findIndex((t: string) => t.startsWith(nowHourISO));
-    const from      = startIdx >= 0 ? startIdx : 0;
-    const elevationM = rawForecast.elevation ?? 0;
+    const times      = rawForecast.hourly.time;
+    const startIdx    = times.findIndex((t: string) => t.startsWith(nowHourISO));
+    const from        = startIdx >= 0 ? startIdx : 0;
+    const elevationM  = rawForecast.elevation ?? 0;
 
-    for (let h = 0; h < HOURS; h++) {
-      const i = from + h;
-      if (i >= times.length) break;
+    for (const { band, pressureLevel } of ALTITUDE_BANDS) {
+      const pressureKey = pressureLevel ? (`windspeed_${pressureLevel}` as const) : null;
+      const pressureSeries: number[] | undefined = pressureKey ? (rawForecast.hourly as any)[pressureKey] : undefined;
 
-      readings.push({
-        cell_id:       point.cell_id,
-        lat:           point.lat,
-        lon:           point.lon,
-        elevation_m:   elevationM,
-        wind_mph:      rawForecast.hourly.windspeed_10m[i]  ?? 0,
-        precip:        rawForecast.hourly.precipitation[i]  ?? 0,
-        visibility:    rawForecast.hourly.visibility[i]     ?? 9999,
-        forecast_time: new Date(times[i] + ":00:00Z").toISOString(), // the hour this row IS
-        fetched_at:    fetchedAt,                                     // when we synced
-      });
+      if (pressureLevel && (!Array.isArray(pressureSeries) || pressureSeries.length !== times.length)) {
+        // Pressure-level data missing/malformed for this point this run —
+        // skip just this band, not the whole point. surface band is
+        // independent and still gets written below.
+        console.warn(`[Data] Missing ${pressureKey} for cell ${point.cell_id}, skipping ${band} band this run.`);
+        continue;
+      }
+
+      for (let h = 0; h < HOURS; h++) {
+        const i = from + h;
+        if (i >= times.length) break;
+
+        const windMph = band === "surface"
+          ? (rawForecast.hourly.windspeed_10m[i] ?? 0)
+          : (pressureSeries![i] ?? 0);
+
+        readings.push({
+          cell_id:       point.cell_id,
+          lat:           point.lat,
+          lon:           point.lon,
+          elevation_m:   elevationM,
+          altitude_band: band,
+          wind_mph:      windMph,
+          gust_mph:      band === "surface" ? (rawForecast.hourly.windgusts_10m[i] ?? 0) : null,
+          precip:        rawForecast.hourly.precipitation[i] ?? 0,
+          visibility:    rawForecast.hourly.visibility[i]    ?? 9999,
+          forecast_time: new Date(times[i] + ":00:00Z").toISOString(), // the hour this row IS
+          fetched_at:    fetchedAt,                                     // when we synced
+        });
+      }
     }
   });
 
@@ -154,23 +223,27 @@ function transformToReadings(points: GridPoint[], forecasts: any[]): WeatherRead
 async function upsertBatch(readings: WeatherReading[]): Promise<void> {
   if (!readings.length) return;
 
+  // FIX-PRESSURE-BAND: altitude_band and gust_mph are now actually in the
+  // column list and UNNEST array — this was the root cause of 925hPa/850hPa
+  // queries always returning zero rows.
   await pool.query(`
     INSERT INTO public.weather_grid
-      (cell_id, geom, elevation_m, wind_mph, precip, visibility, forecast_time, fetched_at)
+      (cell_id, geom, elevation_m, altitude_band, wind_mph, gust_mph, precip, visibility, forecast_time, fetched_at)
     SELECT
       cell_id,
       ST_SetSRID(ST_MakePoint(lon, lat), 4326),
-      elev, wind, precip, vis,
+      elev, band, wind, gust, precip, vis,
       ft::timestamptz,
       fa::timestamptz
     FROM UNNEST(
-      $1::bigint[], $2::float[], $3::float[], $4::float[],
-      $5::float[], $6::float[], $7::float[],
-      $8::text[], $9::text[]
-    ) AS t(cell_id, lat, lon, elev, wind, precip, vis, ft, fa)
+      $1::bigint[], $2::float[], $3::float[], $4::float[], $5::text[],
+      $6::float[], $7::float[], $8::float[], $9::float[],
+      $10::text[], $11::text[]
+    ) AS t(cell_id, lat, lon, elev, band, wind, gust, precip, vis, ft, fa)
     ON CONFLICT (cell_id, altitude_band, forecast_time)
     DO UPDATE SET
       wind_mph      = EXCLUDED.wind_mph,
+      gust_mph      = EXCLUDED.gust_mph,
       precip        = EXCLUDED.precip,
       visibility    = EXCLUDED.visibility,
       elevation_m   = EXCLUDED.elevation_m,
@@ -181,7 +254,9 @@ async function upsertBatch(readings: WeatherReading[]): Promise<void> {
     readings.map(r => r.lat),
     readings.map(r => r.lon),
     readings.map(r => r.elevation_m),
+    readings.map(r => r.altitude_band),
     readings.map(r => r.wind_mph),
+    readings.map(r => r.gust_mph),
     readings.map(r => r.precip),
     readings.map(r => r.visibility),
     readings.map(r => r.forecast_time),
@@ -201,9 +276,9 @@ async function deleteStale(): Promise<number> {
 }
 
 async function main() {
-  console.log(`[${new Date().toISOString()}] Starting weather grid sync (${HOURS}h forecast)...`);
+  console.log(`[${new Date().toISOString()}] Starting weather grid sync (${HOURS}h forecast, ${ALTITUDE_BANDS.length} bands)...`);
   const grid = generateGrid();
-  console.log(`Grid: ${grid.length} points × ${HOURS} hours = ${grid.length * HOURS} readings`);
+  console.log(`Grid: ${grid.length} points × ${HOURS} hours × ${ALTITUDE_BANDS.length} bands = up to ${grid.length * HOURS * ALTITUDE_BANDS.length} readings`);
 
   let totalOk = 0, totalFailed = 0;
 
@@ -216,7 +291,7 @@ async function main() {
       totalOk += readings.length;
     } catch (err) {
       console.error(`Batch ${Math.floor(i / BATCH_SIZE) + 1} failed after retries:`, err);
-      totalFailed += batch.length * HOURS;
+      totalFailed += batch.length * HOURS * ALTITUDE_BANDS.length;
     }
     if (i + BATCH_SIZE < grid.length) await new Promise(r => setTimeout(r, 150));
   }
