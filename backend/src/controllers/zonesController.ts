@@ -4,11 +4,11 @@ import { v4 as uuidv4 } from "uuid";
 import { pool } from "../config/db";
 import { computeZones, DroneThresholds, BBox } from "../services/zoneEngine";
 import { auditLog } from "../services/auditService";
-import { createSession, registerClient, getSession, getSnapshot } from "../services/monitorService";
+import { createSession, registerClient, getSession, getSnapshot, SessionAltitude } from "../services/monitorService";
 
 export async function zonesHandler(req: Request, res: Response) {
   try {
-    const { bbox, thresholds } = req.body;
+    const { bbox, thresholds, altitude_floor, altitude_ceiling } = req.body;
     const apiKeyId = (req as any).apiKeyId;
 
     if (!bbox || typeof bbox.minLat !== "number" || typeof bbox.maxLat !== "number" || typeof bbox.minLon !== "number" || typeof bbox.maxLon !== "number") {
@@ -17,6 +17,7 @@ export async function zonesHandler(req: Request, res: Response) {
 
     const t: DroneThresholds = {
       max_wind_mph:   thresholds?.max_wind_mph   ?? 25,
+      max_gust_mph:   thresholds?.max_gust_mph   ?? 35, // FIX-GUST
       max_precip:     thresholds?.max_precip     ?? 2,
       min_visibility: thresholds?.min_visibility ?? 1000,
     };
@@ -24,15 +25,25 @@ export async function zonesHandler(req: Request, res: Response) {
       minLat: bbox.minLat, maxLat: bbox.maxLat,
       minLon: bbox.minLon, maxLon: bbox.maxLon,
     };
+    // FIX-3D-VOLUME: altitude range is now a real input to this endpoint —
+    // previously there was no altitude concept here at all and computeZones
+    // silently always ran against the surface band only.
+    const altitude: SessionAltitude = {
+      floor:   Number(altitude_floor   ?? 0),
+      ceiling: Number(altitude_ceiling ?? 400),
+    };
+    if (!Number.isFinite(altitude.floor) || !Number.isFinite(altitude.ceiling) || altitude.floor < 0 || altitude.ceiling > 10000 || altitude.floor > altitude.ceiling) {
+      return res.status(400).json({ error: "Invalid altitude_floor/altitude_ceiling" });
+    }
 
-    const result    = await computeZones(b, t);
+    const result    = await computeZones(b, t, altitude.floor, altitude.ceiling);
     const sessionId = uuidv4();
 
     await pool.query(
-      `INSERT INTO weather_monitor_sessions (id, bbox, thresholds) VALUES ($1, $2, $3)`,
-      [sessionId, JSON.stringify(b), JSON.stringify(t)]
+      `INSERT INTO weather_monitor_sessions (id, bbox, thresholds, altitude_floor, altitude_ceiling) VALUES ($1, $2, $3, $4, $5)`,
+      [sessionId, JSON.stringify(b), JSON.stringify(t), altitude.floor, altitude.ceiling]
     );
-    await createSession(sessionId, b, t);
+    await createSession(sessionId, b, t, altitude);
 
     const successResponse = {
       session_id:      sessionId,
@@ -40,8 +51,10 @@ export async function zonesHandler(req: Request, res: Response) {
       safe_airspace:   result.safe_airspace,
       no_fly_zones:    result.no_fly_zones,
       violated_points: result.violated_points,
+      altitude_band:   result.altitude_band,
       thresholds:      t,
       bbox:            b,
+      altitude,
       computed_at:     new Date().toISOString(),
     };
 
@@ -51,6 +64,8 @@ export async function zonesHandler(req: Request, res: Response) {
       summary: {
         session_id:          sessionId,
         bbox:                b,
+        altitude,
+        altitude_band:       result.altitude_band,
         violated_point_count: result.violated_points.length,
         no_fly_zone_count:   result.no_fly_zones.length,
         safe_airspace:       result.safe_airspace,
@@ -73,7 +88,7 @@ export async function zonesStreamHandler(req: Request, res: Response) {
 
   try {
     const { rows } = await pool.query(
-      `SELECT id, bbox, thresholds, last_snapshot FROM weather_monitor_sessions WHERE id = $1 AND expires_at > NOW()`,
+      `SELECT id, bbox, thresholds, altitude_floor, altitude_ceiling, last_snapshot FROM weather_monitor_sessions WHERE id = $1 AND expires_at > NOW()`,
       [sessionId]
     );
     if (!rows.length) return res.status(404).json({ error: "Session not found or expired. Call POST /api/zones to start a new session." });
@@ -102,8 +117,12 @@ if (snapshot) {
    if (!session) {
      const bbox: BBox              = sessionRow.bbox;
      const thresholds: DroneThresholds = sessionRow.thresholds;
-     await createSession(sessionId, bbox, thresholds);
+     // FIX-3D-VOLUME: carry altitude through on the Redis-cold-restart path too
+     const altitude: SessionAltitude = {
+       floor:   typeof sessionRow.altitude_floor   === "number" ? sessionRow.altitude_floor   : 0,
+       ceiling: typeof sessionRow.altitude_ceiling === "number" ? sessionRow.altitude_ceiling : 400,
+     };
+     await createSession(sessionId, bbox, thresholds, altitude);
    }
    registerClient(sessionId, res);
   }
-
