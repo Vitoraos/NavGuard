@@ -2,7 +2,7 @@ import { Request, Response } from "express";
 import { pool } from "../config/db";
 import { checkDronePosition, WeatherThresholds } from "../services/flightService";
 import { isValidLatLon } from "../utils/validators";
-import { queryAirspace } from "../services/ruleService";
+import { queryAirspace, AirspaceThresholds } from "../services/ruleService";
 import { queryWeatherTimeline } from "../services/ruleService";
 import { auditLog } from "../services/auditService";
 
@@ -17,7 +17,7 @@ async function checkContingencyPoint(
   point:      { lat: number; lon: number },
   floor:      number,
   ceil:       number,
-  thresholds: { max_wind_mph: number; max_precip: number; min_visibility: number }
+  thresholds: AirspaceThresholds
 ): Promise<{
   cleared:       boolean;
   restrictions:  object[];
@@ -142,6 +142,7 @@ export async function updatePosition(req: Request, res: Response) {
 
     const safeThresholds: WeatherThresholds = {
       max_wind_mph:   Number(thresholds?.max_wind_mph   ?? 25),
+      max_gust_mph:   Number(thresholds?.max_gust_mph   ?? 35), // FIX-GUST
       max_precip:     Number(thresholds?.max_precip     ?? 2),
       min_visibility: Number(thresholds?.min_visibility ?? 1000),
     };
@@ -158,6 +159,10 @@ export async function updatePosition(req: Request, res: Response) {
       tfr_name:             result.tfr_name,
       current_weather:      result.current_weather,
       remaining_minutes:    result.remaining_minutes,
+      // NEW — from the heading-aware ETA / divergence-tracking fix
+      on_course:            result.on_course,
+      closure_factor:       result.closure_factor,
+      seconds_off_course:   result.seconds_off_course,
       restricted:           result.restricted,
       path_weather_safe:    result.path_weather_safe,
       alert_pushed:         result.alert_pushed,
@@ -177,6 +182,9 @@ export async function updatePosition(req: Request, res: Response) {
         path_weather_safe:    result.path_weather_safe,
         overall_safe:         result.safe,
         remaining_minutes:    result.remaining_minutes,
+        on_course:            result.on_course,
+        closure_factor:       result.closure_factor,
+        seconds_off_course:   result.seconds_off_course,
         altitude_agl_ft:      altitudeAGL_ft,
         checked_at:           successResponse.checked_at,
       },
@@ -220,8 +228,9 @@ export async function updateContingency(req: Request, res: Response) {
     const floor = typeof session.altitude_floor   === "number" ? session.altitude_floor   : 0;
     const ceil  = typeof session.altitude_ceiling === "number" ? session.altitude_ceiling : 400;
 
-    const safeThresholds = {
+    const safeThresholds: AirspaceThresholds = {
       max_wind_mph:   Number(thresholds?.max_wind_mph   ?? 25),
+      max_gust_mph:   Number(thresholds?.max_gust_mph   ?? 35), // FIX-GUST
       max_precip:     Number(thresholds?.max_precip     ?? 2),
       min_visibility: Number(thresholds?.min_visibility ?? 1000),
     };
