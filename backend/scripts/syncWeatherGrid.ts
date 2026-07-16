@@ -18,9 +18,17 @@
 // — which the app *does* make for flights with a higher ceiling — returned
 // zero rows. Now fetches pressure-level wind and writes one row per band.
 //
-// FIX-GUST: previously only windspeed_10m (sustained wind) was fetched.
+// FIX-GUST: previously only wind_speed_10m (sustained wind) was fetched.
 // Gusts are a materially different, often more dangerous, failure mode for
-// small airframes. windgusts_10m is now pulled alongside sustained wind.
+// small airframes. wind_gusts_10m is now pulled alongside sustained wind.
+//
+// FIX-API-NAMING: this file previously used the pre-1.0.0 Open-Meteo names
+// (windspeed_10m, windgusts_10m, windspeed_925hPa/850hPa). Open-Meteo
+// renamed these for consistency at their 1.0.0 release. Using the old names
+// risks the API silently omitting them from the response rather than
+// erroring, which would make every point fail schema validation with no
+// visible error — the sync job would appear to succeed while writing
+// nothing. Now uses the currently-documented names throughout.
 
 import pkg from "pg";
 const { Pool } = pkg;
@@ -75,14 +83,20 @@ interface WeatherReading {
   fetched_at:    string; // ISO string — when this sync ran
 }
 
+// FIX-API-NAMING: Open-Meteo renamed these at their 1.0.0 release for
+// consistency ("windspeed_10m" -> "wind_speed_10m", etc). Using the old
+// names means the API silently omits these keys from the response instead
+// of erroring, which made isValidForecast() reject every point's forecast
+// with no visible failure — the sync would appear to succeed while writing
+// zero usable rows.
 interface OpenMeteoHourly {
-  time:              string[];
-  windspeed_10m:     number[];
-  windgusts_10m:     number[];
-  precipitation:     number[];
-  visibility:        number[];
-  windspeed_925hPa?: number[];
-  windspeed_850hPa?: number[];
+  time:                string[];
+  wind_speed_10m:      number[];
+  wind_gusts_10m:      number[];
+  precipitation:       number[];
+  visibility:          number[];
+  wind_speed_925hPa?:  number[];
+  wind_speed_850hPa?:  number[];
 }
 
 interface OpenMeteoResponse {
@@ -100,12 +114,12 @@ function isValidForecast(data: any): data is OpenMeteoResponse {
   // (e.g. rate limiting a subset of variables) without failing the whole
   // response — we don't want a pressure-level hiccup to also throw out
   // valid surface data.
-  if (!Array.isArray(h.time) || !Array.isArray(h.windspeed_10m) ||
-      !Array.isArray(h.windgusts_10m) ||
+  if (!Array.isArray(h.time) || !Array.isArray(h.wind_speed_10m) ||
+      !Array.isArray(h.wind_gusts_10m) ||
       !Array.isArray(h.precipitation) || !Array.isArray(h.visibility)) return false;
   if (h.time.length === 0 ||
-      h.time.length !== h.windspeed_10m.length ||
-      h.time.length !== h.windgusts_10m.length ||
+      h.time.length !== h.wind_speed_10m.length ||
+      h.time.length !== h.wind_gusts_10m.length ||
       h.time.length !== h.precipitation.length ||
       h.time.length !== h.visibility.length) return false;
   return true;
@@ -115,12 +129,12 @@ async function fetchRawWeather(points: GridPoint[], maxRetries = 3): Promise<any
   const lats = points.map(p => p.lat).join(",");
   const lons  = points.map(p => p.lon).join(",");
   const hourlyParams = [
-    "windspeed_10m",
-    "windgusts_10m",
+    "wind_speed_10m",
+    "wind_gusts_10m",
     "precipitation",
     "visibility",
-    "windspeed_925hPa",
-    "windspeed_850hPa",
+    "wind_speed_925hPa",
+    "wind_speed_850hPa",
   ].join(",");
   const url = `https://api.open-meteo.com/v1/forecast?latitude=${lats}&longitude=${lons}&hourly=${hourlyParams}&wind_speed_unit=mph&forecast_days=1&timezone=UTC`;
 
@@ -160,19 +174,30 @@ function transformToReadings(points: GridPoint[], forecasts: any[]): WeatherRead
   const fetchedAt  = new Date().toISOString();              // sync run timestamp
   const readings: WeatherReading[] = [];
 
-  forecasts.forEach((rawForecast) => {
+  // FIX-POINT-MATCH: Open-Meteo returns multi-location results in the same
+  // order as the requested latitude/longitude lists, so pair by index
+  // rather than by coordinate proximity. The API's returned lat/lon is the
+  // center of whatever grid cell the model actually uses, which the docs
+  // note "might be a few kilometres away" from the requested point — for
+  // coarser global models that offset can exceed a fixed degree-based
+  // tolerance and silently drop the point. Index pairing sidesteps that;
+  // the proximity check below is now just a sanity guard against a
+  // response-order mismatch, not the primary matching method.
+  forecasts.forEach((rawForecast, idx) => {
     if (!isValidForecast(rawForecast)) {
-      console.warn(`[Data] Skipped invalid forecast schema.`);
+      console.warn(`[Data] Skipped invalid forecast schema at index ${idx}.`);
       return;
     }
 
-    const point = points.find(p =>
-      Math.abs(p.lat - rawForecast.latitude) < 0.05 &&
-      Math.abs(p.lon - rawForecast.longitude) < 0.05
-    );
+    const point = points[idx];
     if (!point) {
-      console.warn(`[Data] Could not align forecast coordinates.`);
+      console.warn(`[Data] No matching grid point for forecast at index ${idx}.`);
       return;
+    }
+    // Sanity check, not a filter: if this ever fires, request/response
+    // ordering assumptions have broken and the mapping needs re-checking.
+    if (Math.abs(point.lat - rawForecast.latitude) > 1 || Math.abs(point.lon - rawForecast.longitude) > 1) {
+      console.warn(`[Data] Forecast at index ${idx} is >1° from expected point ${point.cell_id} — possible response ordering mismatch.`);
     }
 
     const times      = rawForecast.hourly.time;
@@ -181,7 +206,7 @@ function transformToReadings(points: GridPoint[], forecasts: any[]): WeatherRead
     const elevationM  = rawForecast.elevation ?? 0;
 
     for (const { band, pressureLevel } of ALTITUDE_BANDS) {
-      const pressureKey = pressureLevel ? (`windspeed_${pressureLevel}` as const) : null;
+      const pressureKey = pressureLevel ? (`wind_speed_${pressureLevel}` as const) : null;
       const pressureSeries: number[] | undefined = pressureKey ? (rawForecast.hourly as any)[pressureKey] : undefined;
 
       if (pressureLevel && (!Array.isArray(pressureSeries) || pressureSeries.length !== times.length)) {
@@ -197,7 +222,7 @@ function transformToReadings(points: GridPoint[], forecasts: any[]): WeatherRead
         if (i >= times.length) break;
 
         const windMph = band === "surface"
-          ? (rawForecast.hourly.windspeed_10m[i] ?? 0)
+          ? (rawForecast.hourly.wind_speed_10m[i] ?? 0)
           : (pressureSeries![i] ?? 0);
 
         readings.push({
@@ -207,7 +232,7 @@ function transformToReadings(points: GridPoint[], forecasts: any[]): WeatherRead
           elevation_m:   elevationM,
           altitude_band: band,
           wind_mph:      windMph,
-          gust_mph:      band === "surface" ? (rawForecast.hourly.windgusts_10m[i] ?? 0) : null,
+          gust_mph:      band === "surface" ? (rawForecast.hourly.wind_gusts_10m[i] ?? 0) : null,
           precip:        rawForecast.hourly.precipitation[i] ?? 0,
           visibility:    rawForecast.hourly.visibility[i]    ?? 9999,
           forecast_time: new Date(times[i] + ":00:00Z").toISOString(), // the hour this row IS
