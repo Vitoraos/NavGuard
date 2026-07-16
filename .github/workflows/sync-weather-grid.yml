@@ -1,12 +1,27 @@
-
 name: Sync Weather Grid
 on:
   schedule:
-    - cron: '*/5 * * * *'
+    # Intentionally frequent — forecasts change and we want fresh data.
+    - cron: '*/3 * * * *'
   workflow_dispatch:
+
+concurrency:
+  # Backstop only. The real overlap prevention is timeout-minutes below
+  # being shorter than the 3-minute cadence — this just guarantees that if
+  # a run somehow still overruns, the next one queues instead of running
+  # concurrently against the same weather_grid rows.
+  group: sync-weather-grid
+  cancel-in-progress: false
+
 jobs:
   sync:
     runs-on: ubuntu-latest
+    # FIX: must be < the 3-minute cadence, not just "some" timeout — a
+    # 10-minute timeout on a job that fires every 3 minutes means a slow
+    # run can still be alive for 2-3 more scheduled triggers before it's
+    # ever killed, which is what actually causes overlap, not the absence
+    # of a concurrency block. 2 minutes leaves margin under the interval.
+    timeout-minutes: 2
     steps:
       - uses: actions/checkout@v4
       - name: Set up Node
@@ -19,7 +34,15 @@ jobs:
         run: npm ci
         working-directory: backend
       - name: Run weather grid sync
-        run: npx ts-node --esm scripts/syncWeatherGrid.ts
+        # Project is CommonJS throughout (tsconfig "module": "CommonJS", no
+        # "type": "module" in package.json) — no --esm flag, matches
+        # tfr-sync.yml's plain ts-node invocation.
+        run: npx ts-node scripts/syncWeatherGrid.ts
         working-directory: backend
         env:
-         DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+      - name: Notify on failure
+        if: failure()
+        run: |
+          echo "Weather grid sync failed at $(date -u)" >> $GITHUB_STEP_SUMMARY
+          echo "Check Open-Meteo API status and DATABASE_URL secret" >> $GITHUB_STEP_SUMMARY
