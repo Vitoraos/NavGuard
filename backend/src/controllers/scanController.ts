@@ -1,5 +1,5 @@
 import { Request, Response } from "express";
-import { queryAirspace, queryWeatherTimeline } from "../services/ruleService";
+import { queryAirspace, queryWeatherTimeline, AirspaceThresholds } from "../services/ruleService";
 import { getWeatherFreshness } from "../services/weatherService";
 import { isValidLatLon, isValidAltitude, isValidBuffer } from "../utils/validators";
 import { parseFlightTime } from "../utils/time";
@@ -34,13 +34,17 @@ function estimateFlightMinutes(
   return Math.max(MIN_DURATION_MIN, Math.min(MAX_DURATION_MIN, Math.ceil(rawMinutes)));
 }
 
+// FIX-GUST-TYPE: this inline threshold type was missing max_gust_mph, which
+// AirspaceThresholds (ruleService.ts) now requires. ts-node --transpileOnly
+// (used by npm run dev / sync:*) never caught this since it skips
+// type-checking, but `tsc` (npm run build) would fail here.
 async function checkContingencyPoint(
   point:       { lat: number; lon: number },
   floor:       number,
   ceil:        number,
   flightStart: Date,
   flightEnd:   Date,
-  thresholds:  { max_wind_mph: number; max_precip: number; min_visibility: number }
+  thresholds:  AirspaceThresholds
 ): Promise<{
   cleared:       boolean;
   restrictions:  object[];
@@ -111,11 +115,15 @@ export async function scanHandler(req: Request, res: Response) {
       });
     }
 
-    const weatherFreshness  = await getWeatherFreshness();
-    const weatherThresholds = {
-      max_wind_mph:   thresholds?.max_wind_mph   ?? 25,
-      max_precip:     thresholds?.max_precip     ?? 2,
-      min_visibility: thresholds?.min_visibility ?? 1000,
+    const weatherFreshness = await getWeatherFreshness();
+    // FIX-GUST: max_gust_mph added, same default (35 mph) used elsewhere
+    // (flightController, zonesController) so a flight isn't held to a
+    // different gust tolerance depending on which endpoint computed it.
+    const weatherThresholds: AirspaceThresholds = {
+      max_wind_mph:   Number(thresholds?.max_wind_mph   ?? 25),
+      max_gust_mph:   Number(thresholds?.max_gust_mph   ?? 35),
+      max_precip:     Number(thresholds?.max_precip     ?? 2),
+      min_visibility: Number(thresholds?.min_visibility ?? 1000),
     };
 
     const [airspace, weatherTimeline, contingencyResult] = await Promise.all([
