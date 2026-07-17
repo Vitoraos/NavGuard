@@ -17,8 +17,12 @@ export interface AirspaceResult {
   path_connected: boolean;
 }
 
+// FIX-GUST: max_gust_mph added so the pre-flight safe-volume computation
+// treats gusts as a distinct hazard from sustained wind, same as the
+// in-flight position check in flightService.ts.
 export interface AirspaceThresholds {
   max_wind_mph: number;
+  max_gust_mph: number;
   max_precip: number;
   min_visibility: number;
 }
@@ -53,7 +57,15 @@ export async function queryAirspace(
     weather_zones AS (
       SELECT ST_Buffer(ST_Collect(geom)::geography, $7)::geometry AS geom
       FROM weather_grid
-      WHERE (wind_mph > $8 OR precip > $9 OR visibility < $10)
+      WHERE (
+          wind_mph > $8
+          OR precip > $9
+          OR visibility < $10
+          -- FIX-GUST: NULL gust_mph (non-surface bands, not modeled) never
+          -- counts as a violation on its own — only an actual gust reading
+          -- above threshold does.
+          OR (gust_mph IS NOT NULL AND gust_mph > $16)
+        )
         AND altitude_band = $11
         AND fetched_at > NOW() - INTERVAL '40 minutes'
         AND forecast_time >= date_trunc('hour', $5::timestamptz)
@@ -113,6 +125,7 @@ export async function queryAirspace(
     origin.lat,
     destination.lon,
     destination.lat,
+    thresholds.max_gust_mph,
   ];
 
   const restrictionParams = [
