@@ -2,8 +2,8 @@
 // Redis-backed SSE monitor service.
 //
 // Architecture:
-//   - Session metadata (bbox, thresholds, last_snapshot) stored in Redis hashes
-//     with TTL matching the DB expires_at. Survives server restarts.
+//   - Session metadata (bbox, thresholds, altitude range, last_snapshot) stored
+//     in Redis hashes with TTL matching the DB expires_at. Survives server restarts.
 //   - Broadcasts go through Redis Pub/Sub channel "session:{id}".
 //     Any instance that has subscribers for that session will forward to them.
 //   - Polling is protected by a Redis lock "lock:poll:{id}".
@@ -21,6 +21,17 @@ const POLL_INTERVAL_MS  = 5 * 60 * 1000;
 const LOCK_TTL_S        = 60;           // poll lock expires after 60s even if instance dies
 const SESSION_TTL_S     = 12 * 60 * 60; // 12 hours, matches DB expires_at
 
+// FIX-3D-VOLUME: session metadata now carries the altitude range the zone
+// computation should run against, alongside bbox/thresholds. Previously
+// there was no altitude concept in this file at all — every re-poll called
+// computeZones(bbox, thresholds) with no altitude, which meant every session
+// silently defaulted to the surface band regardless of what altitude the
+// caller actually planned to fly at.
+export interface SessionAltitude {
+  floor:   number;
+  ceiling: number;
+}
+
 // Local client registry — per instance only
 const localClients = new Map<string, Set<Response>>();
 
@@ -35,7 +46,8 @@ const keyViolated = (id: string) => `session:violated:${id}`;
 export async function createSession(
   sessionId:  string,
   bbox:       BBox,
-  thresholds: DroneThresholds
+  thresholds: DroneThresholds,
+  altitude:   SessionAltitude = { floor: 0, ceiling: 400 }
 ): Promise<void> {
   const exists = await redis.exists(keyMeta(sessionId));
   if (exists) return;
@@ -43,6 +55,7 @@ export async function createSession(
   await redis.hset(keyMeta(sessionId), {
     bbox:       JSON.stringify(bbox),
     thresholds: JSON.stringify(thresholds),
+    altitude:   JSON.stringify(altitude),
     created_at: new Date().toISOString(),
   });
   await redis.expire(keyMeta(sessionId), SESSION_TTL_S);
@@ -51,13 +64,15 @@ export async function createSession(
   startPolling(sessionId);
 }
 
-export async function getSession(sessionId: string): Promise<{ id: string; bbox: BBox; thresholds: DroneThresholds } | null> {
+export async function getSession(sessionId: string): Promise<{ id: string; bbox: BBox; thresholds: DroneThresholds; altitude: SessionAltitude } | null> {
   const meta = await redis.hgetall(keyMeta(sessionId));
   if (!meta?.bbox) return null;
   return {
     id:         sessionId,
     bbox:       JSON.parse(meta.bbox),
     thresholds: JSON.parse(meta.thresholds),
+    // Fallback for sessions created before this field existed
+    altitude:   meta.altitude ? JSON.parse(meta.altitude) : { floor: 0, ceiling: 400 },
   };
 }
 
@@ -188,8 +203,12 @@ async function runPoll(sessionId: string): Promise<void> {
 
     const bbox:       BBox           = JSON.parse(meta.bbox);
     const thresholds: DroneThresholds = JSON.parse(meta.thresholds);
+    // FIX-3D-VOLUME: read the session's altitude range instead of always
+    // computing zones with no altitude argument (which silently meant
+    // "surface only" inside computeZones).
+    const altitude: SessionAltitude  = meta.altitude ? JSON.parse(meta.altitude) : { floor: 0, ceiling: 400 };
 
-    const result = await computeZones(bbox, thresholds);
+    const result = await computeZones(bbox, thresholds, altitude.floor, altitude.ceiling);
 
     // Diff against last violated set stored in Redis
     const prevRaw      = await redis.smembers(keyViolated(sessionId));
@@ -215,6 +234,7 @@ async function runPoll(sessionId: string): Promise<void> {
       safe_airspace:   result.safe_airspace,
       no_fly_zones:    result.no_fly_zones,
       violated_points: result.violated_points,
+      altitude_band:   result.altitude_band,
     };
 
     await broadcast(sessionId, event);
