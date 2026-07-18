@@ -235,6 +235,14 @@ async function runPoll(sessionId: string): Promise<void> {
       no_fly_zones:    result.no_fly_zones,
       violated_points: result.violated_points,
       altitude_band:   result.altitude_band,
+      // FIX-NFZ-STALE: a route-adapting client must be able to tell a live,
+      // trustworthy volume apart from one where the underlying NFZ/TFR sync
+      // has silently stopped updating. Without this, a dead syncTFRs.ts job
+      // would still produce zone_update events that look perfectly normal —
+      // the client's router would keep rerouting confidently against data
+      // that's no longer being kept current.
+      nfz_stale:       result.nfz_stale,
+      nfz_last_synced: result.nfz_last_synced,
     };
 
     await broadcast(sessionId, event);
@@ -242,6 +250,9 @@ async function runPoll(sessionId: string): Promise<void> {
 
     if (event.alert) {
       console.log(`[monitor] ALERT — session ${sessionId}: ${newViolations.length} new violation(s)`);
+    }
+    if (event.nfz_stale) {
+      console.warn(`[monitor] NFZ data stale for session ${sessionId} — last synced ${event.nfz_last_synced ?? "never"}`);
     }
 
   } catch (err) {
