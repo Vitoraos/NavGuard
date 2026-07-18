@@ -235,7 +235,7 @@ function transformToReadings(points: GridPoint[], forecasts: any[]): WeatherRead
           gust_mph:      band === "surface" ? (rawForecast.hourly.wind_gusts_10m[i] ?? 0) : null,
           precip:        rawForecast.hourly.precipitation[i] ?? 0,
           visibility:    rawForecast.hourly.visibility[i]    ?? 9999,
-          forecast_time: new Date(times[i] + ":00:00Z").toISOString(), // the hour this row IS
+          forecast_time: new Date(times[i] + ":00Z").toISOString(), // the hour this row IS
           fetched_at:    fetchedAt,                                     // when we synced
         });
       }
