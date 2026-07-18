@@ -36,7 +36,21 @@ export async function zonesHandler(req: Request, res: Response) {
       return res.status(400).json({ error: "Invalid altitude_floor/altitude_ceiling" });
     }
 
-    const result    = await computeZones(b, t, altitude.floor, altitude.ceiling);
+    const result = await computeZones(b, t, altitude.floor, altitude.ceiling);
+
+    // FIX-NFZ-STALE: refuse to start a routing session against airspace data
+    // that's already known to be stale — same posture /scan already takes
+    // (503 airspace_data_stale) when its TFR data is too old. A client
+    // shouldn't be handed a session_id and a stream_url for a volume that's
+    // untrustworthy from the very first computation.
+    if (result.nfz_stale) {
+      return res.status(503).json({
+        error:       "airspace_data_stale",
+        last_synced: result.nfz_last_synced,
+        message:     "NFZ/TFR data is older than 15 minutes. Do not start a routing session against this volume.",
+      });
+    }
+
     const sessionId = uuidv4();
 
     await pool.query(
@@ -52,6 +66,7 @@ export async function zonesHandler(req: Request, res: Response) {
       no_fly_zones:    result.no_fly_zones,
       violated_points: result.violated_points,
       altitude_band:   result.altitude_band,
+      nfz_last_synced: result.nfz_last_synced, // NEW — lets the client judge freshness even on a fresh (non-stale) response
       thresholds:      t,
       bbox:            b,
       altitude,
