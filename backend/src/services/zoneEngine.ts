@@ -15,6 +15,20 @@ function selectBand(altitudeCeilingFt: number): string {
   return "850hPa";
 }
 
+// FIX-NFZ-STALE: mirrors the 15-minute threshold /scan already enforces via
+// its own tfrStale check (scanController.ts). computeZones runs both on
+// every initial POST /zones call AND on every 5-minute re-poll tick inside
+// monitorService.ts, forever, for the lifetime of a session. Without this,
+// a dead/broken syncTFRs.ts job means the live SSE stream keeps confidently
+// broadcasting zone_update events that silently omit any TFR that appeared,
+// changed, or expired since the last successful sync — exactly the kind of
+// stale-data-treated-as-current failure the weather side of this same query
+// already guards against (see the `fetched_at > NOW() - INTERVAL '40
+// minutes'` filter below), but the NFZ side never had an equivalent check
+// until now. Kept as one named constant so this can't silently drift out of
+// sync with /scan's threshold.
+const NFZ_STALE_MINUTES = 15;
+
 export interface DroneThresholds {
   max_wind_mph:   number;
   max_gust_mph:   number; // FIX-GUST
@@ -38,6 +52,8 @@ export interface ZoneComputeResult {
   no_fly_zones:    object[];
   violated_points: ViolatedPoint[];
   altitude_band:   string; // NEW — surfaced so callers/UI know which band this was computed against
+  nfz_stale:       boolean;       // NEW — true if nfz_zones hasn't synced recently; caller decides whether to trust this event for routing
+  nfz_last_synced: string | null; // NEW — ISO timestamp of the most recent successful NFZ/TFR sync, or null if the table has never synced
 }
 
 export async function computeZones(
@@ -48,16 +64,26 @@ export async function computeZones(
 ): Promise<ZoneComputeResult> {
   const band = selectBand(altitudeCeiling);
 
-  const { rows } = await pool.query<{
-    id: number; lat: string; lon: string;
-    wind_mph: string; gust_mph: string | null; precip: string; visibility: string;
-  }>(`
-    SELECT id, ST_Y(geom) AS lat, ST_X(geom) AS lon, wind_mph, gust_mph, precip, visibility
-    FROM weather_grid
-    WHERE ST_Within(geom, ST_MakeEnvelope($1, $2, $3, $4, 4326))
-      AND fetched_at > NOW() - INTERVAL '40 minutes'
-      AND altitude_band = $5
-  `, [bbox.minLon, bbox.minLat, bbox.maxLon, bbox.maxLat, band]);
+  // FIX-NFZ-STALE: run the weather-grid query and the NFZ freshness check
+  // in parallel — they're independent reads and there's no reason to pay
+  // the latency of them sequentially on every poll tick.
+  const [{ rows }, { rows: syncRows }] = await Promise.all([
+    pool.query<{
+      id: number; lat: string; lon: string;
+      wind_mph: string; gust_mph: string | null; precip: string; visibility: string;
+    }>(`
+      SELECT id, ST_Y(geom) AS lat, ST_X(geom) AS lon, wind_mph, gust_mph, precip, visibility
+      FROM weather_grid
+      WHERE ST_Within(geom, ST_MakeEnvelope($1, $2, $3, $4, 4326))
+        AND fetched_at > NOW() - INTERVAL '40 minutes'
+        AND altitude_band = $5
+    `, [bbox.minLon, bbox.minLat, bbox.maxLon, bbox.maxLat, band]),
+    pool.query<{ synced: string | null }>(`SELECT MAX(last_synced) AS synced FROM nfz_zones`),
+  ]);
+
+  const nfzLastSynced = syncRows[0]?.synced ?? null;
+  const nfzStale = !nfzLastSynced ||
+    Date.now() - new Date(nfzLastSynced).getTime() > NFZ_STALE_MINUTES * 60 * 1000;
 
   const violated: ViolatedPoint[] = [];
   const violatedIds: number[] = [];
@@ -121,5 +147,7 @@ export async function computeZones(
     no_fly_zones:    geo?.no_fly_union   ? [{ type: "Feature", geometry: JSON.parse(geo.no_fly_union), properties: { source: "combined", reason: "Weather violations + active NFZ zones" } }] : [],
     violated_points: violated,
     altitude_band:   band,
+    nfz_stale:       nfzStale,
+    nfz_last_synced: nfzLastSynced,
   };
 }
