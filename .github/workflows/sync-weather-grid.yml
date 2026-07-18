@@ -21,7 +21,7 @@ jobs:
     # run can still be alive for 2-3 more scheduled triggers before it's
     # ever killed, which is what actually causes overlap, not the absence
     # of a concurrency block. 2 minutes leaves margin under the interval.
-    timeout-minutes: 2
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
       - name: Set up Node
